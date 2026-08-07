@@ -275,8 +275,25 @@ def get_llm_advice(client, date_str: str, region: str, sea: str, mul: str, fishe
 @st.cache_data(ttl=1800)
 def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
     """Open-Meteo 일별 예보 + 해양(파고) 정보"""
-    result = {"ok": False, "msg": ""}
+    result = {"ok": False, "msg": "", "out_of_range": False}
     try:
+        # 예보 가능 범위 체크 (Open-Meteo는 대략 16일)
+        try:
+            target = date.fromisoformat(target_date)
+        except Exception:
+            target = None
+        if target is not None:
+            delta_days = (target - date.today()).days
+            if delta_days > 16:
+                result["out_of_range"] = True
+                result["msg"] = "날씨 예보는 오늘 기준 최대 16일까지 지원됩니다. 더 가까운 날짜를 선택해 주세요."
+                return result
+            if delta_days < -5:
+                # 너무 과거도 예보 API 범위 밖
+                result["out_of_range"] = True
+                result["msg"] = "선택한 날짜는 예보 범위를 벗어났습니다. 오늘부터 16일 이내 날짜를 선택해 주세요."
+                return result
+
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}"
@@ -286,6 +303,10 @@ def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
             f"&start_date={target_date}&end_date={target_date}"
         )
         r = requests.get(url, timeout=10)
+        if r.status_code == 400:
+            result["out_of_range"] = True
+            result["msg"] = "날씨 예보는 오늘 기준 최대 16일까지 지원됩니다. 더 가까운 날짜를 선택해 주세요."
+            return result
         r.raise_for_status()
         daily = r.json().get("daily", {})
 
@@ -321,7 +342,12 @@ def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
         })
         return result
     except Exception as e:
-        result["msg"] = str(e)
+        err = str(e)
+        if "400" in err or "Bad Request" in err:
+            result["out_of_range"] = True
+            result["msg"] = "날씨 예보는 오늘 기준 최대 16일까지 지원됩니다. 더 가까운 날짜를 선택해 주세요."
+        else:
+            result["msg"] = err
         return result
 
 
@@ -503,7 +529,11 @@ if st.session_state.get("selected_day"):
             st.markdown(f"**파고(최대)**: 약 **{wave:.1f} m**{extra}")
         st.caption(f"출처: Open-Meteo · 기준 좌표 {region} ({lat:.2f}, {lon:.2f})")
     else:
-        st.warning(f"날씨 정보를 불러오지 못했어요. ({weather.get('msg', '')})")
+        msg = weather.get("msg") or "날씨 정보를 불러오지 못했어요."
+        if weather.get("out_of_range"):
+            st.info(f"ℹ️ {msg}")
+        else:
+            st.warning(f"날씨 정보를 불러오지 못했어요. ({msg})")
 
     st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
 
