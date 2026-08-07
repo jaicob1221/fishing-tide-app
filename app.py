@@ -237,6 +237,17 @@ def get_openai_client():
         return None
 
 
+def get_naver_credentials():
+    try:
+        cid = st.secrets.get("NAVER_CLIENT_ID", "") or ""
+        csec = st.secrets.get("NAVER_CLIENT_SECRET", "") or ""
+        if cid and csec and not str(cid).startswith("여기에"):
+            return str(cid).strip(), str(csec).strip()
+    except Exception:
+        pass
+    return "", ""
+
+
 # ==================== 사이드바 ====================
 with st.sidebar:
     st.header("⚙️ 설정")
@@ -270,6 +281,12 @@ with st.sidebar:
                     st.caption("로컬 SSL 문제면 secrets.toml에 SSL_INSECURE = true 추가")
     else:
         st.warning("⚠️ secrets에 OPENAI_API_KEY를 설정해주세요")
+
+    nid, nsec = get_naver_credentials()
+    if nid and nsec:
+        st.success("✅ 네이버 검색 API 키 로드됨")
+    else:
+        st.warning("⚠️ NAVER_CLIENT_ID / SECRET 미설정")
 
     st.info("💡 달력 날짜를 누르면 상세 정보가 나와요!")
 
@@ -352,12 +369,13 @@ def estimate_tide_times(mul_type: str) -> dict:
 # 조행기·카페에서 실제로 많이 쓰는 방법. AI가 생미끼 등 비주류로 빗나가지 않게 고정.
 SPECIES_METHODS = {
     "주꾸미": {
-        "주력": "에깅(에기 루어)",
-        "금지/비주류": "생미끼·외수질 남발은 현재 시즌 주류 아님",
-        "채비": "에깅 로드 + 에깅 릴, 에기 2.5~3.5호, 샤로우/노멀 타입",
-        "포인트": "수심 5~20m 내외 모래·자갈·패류 지대, 조류 완만한 골",
-        "시즌팁": "초반(9월)은 작은 씨알·얕은 수심, 중후반은 조금 더 깊은 곳. 에기 컬러는 자연계·핑크·오렌지 반응이 조행기에 자주 등장",
-        "액션": "캐스팅 후 바닥 찍고 짧게 훅킹·폴링, 느린 저킹보다 바닥 탐색 위주",
+        "주력": "에깅(에기 루어) — 생미끼 주력 안내 금지",
+        "금지/비주류": "생미끼를 기본 공법으로 제시 금지",
+        "채비": "쭈갑대(또는 가벼운 낚싯대)+베이트릴, 봉돌 12~16호 이상, 에기, 애자(스냅). 조류에 따라 단차·가지줄 길이 조절하는 2단 채비가 조행기에 자주 등장. 형형 에기에 과메기를 쓰는 사례도 있음",
+        "포인트": "바닥 주꾸미 — 모래·자갈·패류 지대, 수심은 배·물때에 따라 탐색. 밑걸림 방지 위해 바닥을 지속 터치",
+        "시즌팁": "서해는 조수 간만 차가 커 물때 선택이 중요. 조수 간만 적은 조금 물때가 유리하다는 조행기·안내가 많음. 9월 초반은 씨알·수심 다양",
+        "액션": "에기를 바닥에 두고 짧게 들어 올렸다 내리며 탐색. 너무 세게 저킹하기보다 바닥 감각 유지. 반응 좋은 에기 컬러·호수는 그날 조과에 맞춰 교체",
+        "필수장비목록": "쭈갑대, 베이트릴, 봉돌 12~16호+, 에기(여러 컬러), 애자, 합사·쇼크리더",
     },
     "갑오징어": {
         "주력": "에깅(에기)",
@@ -442,6 +460,7 @@ SPECIES_METHODS = {
 }
 
 
+
 def get_species_method_guide(fishes: list) -> str:
     lines = []
     for f in fishes or []:
@@ -449,6 +468,8 @@ def get_species_method_guide(fishes: list) -> str:
         if not info:
             lines.append(f"- {f}: 해당 지역 조행기에서 가장 많이 쓰는 선상 주력 채비를 따를 것")
             continue
+        extra = info.get("필수장비목록", "")
+        extra_line = f"\n  · 필수장비: {extra}" if extra else ""
         lines.append(
             f"- {f}\n"
             f"  · 주력 공법: {info['주력']}\n"
@@ -457,6 +478,7 @@ def get_species_method_guide(fishes: list) -> str:
             f"  · 시즌팁: {info['시즌팁']}\n"
             f"  · 액션: {info['액션']}\n"
             f"  · 주의: {info['금지/비주류'] or '조행기 주류 방식만 안내'}"
+            + extra_line
         )
     return "\n".join(lines) if lines else "(어종 공략 데이터 없음)"
 
@@ -488,39 +510,23 @@ def get_seasonal_reference(sea: str, month: int) -> str:
     return data.get(sea, {}).get(month, "광어, 우럭, 참돔")
 
 
-# ==================== ChatGPT 추천 ====================
 def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str, month: int) -> list:
     seasonal_ref = get_seasonal_reference(sea, month)
     if client is None:
         return [f.strip() for f in seasonal_ref.split(",")][:3]
     try:
-        prompt = f"""
-당신은 한국 바다 선상낚시 전문 조황 분석가입니다.
-
-[출조 조건]
-- 날짜: {date_str}
-- 지역: {region} ({sea})
-- 물때: {mul}
-- 월: {month}월
-
-[시즌 참고 데이터]
-{seasonal_ref}
-
-시즌 참고 데이터를 우선 반영하고, 물때·지역 특성을 고려해
-선상낚시 대표 어종 3가지만 추천하세요.
-
-형식만 출력:
-어종1, 어종2, 어종3
-"""
+        prompt = f"""한국 바다 선상낚시 조황 분석가로서.
+날짜:{date_str} 지역:{region}({sea}) 물때:{mul} 월:{month}월
+시즌 참고:{seasonal_ref}
+시즌 참고를 우선 반영해 선상 대표 어종 3가지만.
+형식: 어종1, 어종2, 어종3"""
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "한국 바다낚시 조황 전문가. 형식만 정확히 답변."},
+                {"role": "system", "content": "형식만 정확히 답변."},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=50,
-            temperature=0.5,
-            timeout=30,
+            max_tokens=50, temperature=0.5, timeout=30,
         )
         text = response.choices[0].message.content.strip()
         fishes = [f.strip() for f in text.replace("、", ",").split(",") if f.strip()]
@@ -530,53 +536,99 @@ def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str
         return [f.strip() for f in seasonal_ref.split(",")][:3]
 
 
-def fetch_johwang_snippets(region: str, sea: str, fishes: list, month: int) -> str:
-    """웹 검색으로 선상 조황·공략 관련 글 제목/요약을 수집"""
+
+def naver_search(query: str, client_id: str, client_secret: str, kind: str = "blog", display: int = 8) -> list:
+    """네이버 검색 API (blog / cafearticle)"""
     import re
-    snippets = []
+    endpoints = {
+        "blog": "https://openapi.naver.com/v1/search/blog.json",
+        "cafe": "https://openapi.naver.com/v1/search/cafearticle.json",
+    }
+    url = endpoints.get(kind, endpoints["blog"])
+    headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
+    }
+    params = {
+        "query": query,
+        "display": display,
+        "sort": "date",  # 최신 조행기 우선
+    }
+    r = requests.get(url, headers=headers, params=params, timeout=10)
+    if r.status_code != 200:
+        return []
+    items = r.json().get("items") or []
+    results = []
+    for it in items:
+        title = re.sub(r"<[^>]+>", "", it.get("title") or "").strip()
+        desc = re.sub(r"<[^>]+>", "", it.get("description") or "").strip()
+        link = it.get("link") or ""
+        source = it.get("bloggername") or it.get("cafename") or kind
+        if title:
+            results.append({
+                "title": title,
+                "description": desc[:180],
+                "link": link,
+                "source": source,
+                "kind": kind,
+            })
+    return results
+
+
+def fetch_johwang_snippets(region: str, sea: str, fishes: list, month: int) -> str:
+    """네이버 블로그·카페 검색 API로 'N월 어종 조행기' 수집"""
+    client_id, client_secret = get_naver_credentials()
+    if not client_id or not client_secret:
+        return (
+            "(네이버 API 키 없음 — secrets에 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 설정 필요. "
+            "현장 주류 공법 데이터로 보완)"
+        )
+
     queries = []
     for fish in (fishes or ["광어"])[:2]:
-        queries.append(f"{region} {fish} 선상 조황 {month}월")
-        queries.append(f"{fish} 선상 에기 조행기" if fish in ("주꾸미", "갑오징어", "한치") else f"{sea} {fish} 선상낚시 채비 조행기")
-        queries.append(f"{fish} 선상 {month}월 공략")
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; FishingTideApp/1.0)"}
-    for q in queries[:3]:
-        try:
-            r = requests.post(
-                "https://html.duckduckgo.com/html/",
-                data={"q": q},
-                headers=headers,
-                timeout=8,
-            )
-            if r.status_code != 200:
-                continue
-            html = r.text
-            titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.S)
-            bodies = re.findall(r'class="result__snippet"[^>]*>(.*?)</', html, re.S)
-            for i, t in enumerate(titles[:4]):
-                t_clean = re.sub(r"<[^>]+>", "", t).strip()
-                b_clean = ""
-                if i < len(bodies):
-                    b_clean = re.sub(r"<[^>]+>", "", bodies[i]).strip()
-                if t_clean:
-                    line = f"- {t_clean}"
-                    if b_clean:
-                        line += f": {b_clean[:120]}"
-                    snippets.append(line)
-        except Exception:
-            continue
-    if not snippets:
-        return "(웹 검색 결과를 가져오지 못함 — 시즌·지역 일반 조황 경향으로 보완)"
+        queries.append(f"{month}월 {fish} 조행기")
+        queries.append(f"{month}월 {fish} 선상 조행기")
+        queries.append(f"{region} {fish} 조행기")
+        queries.append(f"{fish} 선상 조행기")
+
+    collected = []
+    errors = []
+    for q in queries[:4]:
+        for kind in ("blog", "cafe"):
+            try:
+                items = naver_search(q, client_id, client_secret, kind=kind, display=5)
+                for it in items:
+                    collected.append(it)
+            except Exception as e:
+                errors.append(f"{kind}:{type(e).__name__}")
+
+    if not collected:
+        msg = f"(네이버 조행기 검색 결과 없음 — '{month}월 어종 조행기' 및 현장 주류 공법으로 보완)"
+        if errors:
+            msg += f" [오류: {', '.join(errors[:3])}]"
+        return msg
+
+    # 제목 기준 중복 제거
     uniq, seen = [], set()
-    for s in snippets:
-        k = s[:40]
-        if k not in seen:
-            seen.add(k)
-            uniq.append(s)
-    return "\n".join(uniq[:10])
+    for it in collected:
+        key = it["title"][:40]
+        if key in seen:
+            continue
+        seen.add(key)
+        kind_label = "블로그" if it["kind"] == "blog" else "카페"
+        line = f"- [{kind_label}/{it['source']}] {it['title']}"
+        if it.get("description"):
+            line += f": {it['description']}"
+        uniq.append(line)
+        if len(uniq) >= 14:
+            break
+
+    header = f"[네이버 검색] '{month}월 조행기' 등 {len(uniq)}건 (블로그+카페, 최신순)"
+    return header + "\n" + "\n".join(uniq)
 
 
-def get_llm_advice(client, date_str: str, region: str, sea: str, mul: str, fishes: list, month: int = None) -> str:
+
+def get_llm_advice(client, date_str, region, sea, mul, fishes, month=None):
     if client is None:
         return "⚠️ secrets에 OpenAI API Key를 설정하면 AI 낚시조언을 받을 수 있어요."
     try:
@@ -585,104 +637,89 @@ def get_llm_advice(client, date_str: str, region: str, sea: str, mul: str, fishe
                 month = int(date_str.split("-")[1])
             except Exception:
                 month = date.today().month
-
-        with st.spinner("조황·공략 관련 글을 수집하는 중..."):
+        with st.spinner("조행기 글을 검색·수집하는 중..."):
             web_refs = fetch_johwang_snippets(region, sea, fishes, month)
-
         seasonal = get_seasonal_reference(sea, month)
         method_guide = get_species_method_guide(fishes)
-
         prompt = f"""
-너는 한국 바다 '선상' 조행기·카페 글을 요약하는 실전 분석가다.
-절대 교과서식·이상한 생미끼 타령으로 흐르지 마라.
-지금 시즌 조행기에서 실제로 많이 쓰는 공법만 말한다.
+너는 네이버 등 웹의 '조행기' 글을 요약하는 실전 분석가다.
+일반 AI 잔소리 금지. 조행기·카페에서 반복되는 현장 내용만 말한다.
 
-[출조 조건]
-- 날짜: {date_str}
-- 지역: {region} ({sea})
-- 물때: {mul}
-- 대상 어종: {', '.join(fishes)}
-- 형태: 선상만 (갯바위·방파제·워킹 금지)
+[조건] 날짜 {date_str} / {region}({sea}) / 물때 {mul} / 어종 {', '.join(fishes)} / 선상만
 
-[시즌 출조 경향]
-{seasonal}
+[시즌] {seasonal}
 
-[어종별 현장 주류 공법 — 반드시 이걸 우선 따를 것]
+[현장 주류 공법 — 최우선]
 {method_guide}
 
-[웹 검색으로 모은 관련 글 제목/요약]
+[네이버 블로그·카페 검색 결과 — 'N월 어종 조행기' 키워드, 최신순. 이 내용을 최우선 반영]
 {web_refs}
 
-필수 규칙:
-1) 주꾸미·갑오징어·한치는 주력이 에기(루어/에깅)다. 생미끼를 주 공법으로 안내하면 안 된다.
-2) 위 '현장 주류 공법'과 웹 제목에 반복되는 채비·컬러·수심·액션을 반영해라.
-3) 조행기에 안 나오는 옛날식·비주류 방법을 기본으로 제시하지 마라.
-4) 반말, 800~1300자.
+규칙:
+1) 주꾸미=에기+봉돌(12~16호)·애자·2단채비가 주류. 생미끼 주력 금지.
+2) 조행기 제목/요약에 나온 채비·물때·수심을 반영.
+3) 반말, 800~1300자.
 
-출력 구조:
 ### 조황 분위기
-- 이 시기 조행기에서 보이는 분위기 (씨알, 마릿수, 수심대)
-
-### 주력 공법 (어종별)
-- 무엇을 쓰는지 (예: 주꾸미=에기 몇 호·어떤 타입)
-- 왜 조행기에서 그게 주력인지
-- 반응 좋았다는 이야기가 많은 컬러/무게/액션
-
-### 배 위에서의 운영
-- 바닥 찍는 간격, 폴링, 저킹, 수심 찾는 법
-- 물때(사리/조금)에 따른 포인트 이동
-
-### 오늘 바로 체크
-- 입질 없을 때 바꿀 순서 (에기 교체→수심→포인트 등)
-- 흔한 실수 (예: 주꾸미인데 생미끼만 준비하는 것)
+### 주력 공법 (어종별) — 장비·채비·액션을 조행기처럼 구체적으로
+### 물때·운영
+### 바로 체크할 것
 """
-
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "한국 선상 조행기 요약 전문가. 주꾸미/갑오징어/한치는 에깅이 주력. 생미끼를 주력으로 쓰면 안 됨. 반말.",
-                },
+                {"role": "system", "content": "조행기 요약 전문가. 주꾸미는 에기+봉돌 주력. 생미끼 주력 금지. 반말."},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=1400,
-            temperature=0.55,
-            timeout=60,
+            max_tokens=1400, temperature=0.5, timeout=60,
         )
         body = response.choices[0].message.content
-        return (
-            body
-            + "\n\n---\n*참고: 웹 조황·공략 글 검색 결과를 바탕으로 요약 분석한 내용이며, 당일 현장과 다를 수 있습니다.*"
-        )
+        return body + f"\n\n---\n*참고: 네이버 블로그·카페 '{month}월 어종 조행기' 검색 + 현장 주류 공법 기반. 당일 현장과 다를 수 있습니다.*"
     except Exception as e:
         return f"⚠️ LLM 오류: {type(e).__name__}: {e}"
 
 
+def render_stat_row(items, accent="#1e88e5"):
+    cells = []
+    for label, value, sub in items:
+        sub_html = f'<div style="font-size:11px;color:#888;margin-top:2px;">{sub}</div>' if sub else ""
+        cells.append(
+            '<div style="flex:1;min-width:90px;background:linear-gradient(145deg,#fafbfc,#fff);'
+            f'border:1px solid #e0e0e0;border-left:3px solid {accent};border-radius:8px;padding:8px 10px;'
+            'box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+            f'<div style="font-size:11px;color:#666;margin-bottom:2px;">{label}</div>'
+            f'<div style="font-size:14px;font-weight:600;color:#222;line-height:1.3;">{value}</div>'
+            f"{sub_html}</div>"
+        )
+    st.markdown(
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px 0;">'
+        + "".join(cells) + "</div>",
+        unsafe_allow_html=True,
+    )
 
-# ==================== 날씨 (Open-Meteo, 키 불필요) ====================
+
+def sunsang24_link(region: str, fish: str = "") -> str:
+    return "https://www.sunsang24.com/"
+
+
 @st.cache_data(ttl=1800)
 def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
-    """Open-Meteo 일별 예보 + 해양(파고) 정보"""
     result = {"ok": False, "msg": "", "out_of_range": False}
     try:
-        # 예보 가능 범위 체크 (Open-Meteo는 대략 16일)
         try:
             target = date.fromisoformat(target_date)
         except Exception:
             target = None
         if target is not None:
-            delta_days = (target - date.today()).days
-            if delta_days > 16:
+            delta = (target - date.today()).days
+            if delta > 16:
                 result["out_of_range"] = True
                 result["msg"] = "날씨 예보는 오늘 기준 최대 16일까지 지원됩니다. 더 가까운 날짜를 선택해 주세요."
                 return result
-            if delta_days < -5:
-                # 너무 과거도 예보 API 범위 밖
+            if delta < -5:
                 result["out_of_range"] = True
-                result["msg"] = "선택한 날짜는 예보 범위를 벗어났습니다. 오늘부터 16일 이내 날짜를 선택해 주세요."
+                result["msg"] = "선택한 날짜는 예보 범위를 벗어났습니다."
                 return result
-
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}"
@@ -698,25 +735,20 @@ def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
             return result
         r.raise_for_status()
         daily = r.json().get("daily", {})
-
-        marine_url = (
-            "https://marine-api.open-meteo.com/v1/marine"
-            f"?latitude={lat}&longitude={lon}"
-            "&daily=wave_height_max,wave_direction_dominant,wave_period_max"
-            "&timezone=Asia%2FSeoul"
-            f"&start_date={target_date}&end_date={target_date}"
-        )
-        mr = requests.get(marine_url, timeout=10)
         marine = {}
-        if mr.status_code == 200:
-            marine = mr.json().get("daily", {})
-
-        weather_codes = {
-            0: "맑음", 1: "대체로 맑음", 2: "구름 조금", 3: "흐림",
-            45: "안개", 48: "서리 안개",
-            51: "이슬비", 61: "비", 63: "비", 65: "강한 비",
-            71: "눈", 80: "소나기", 95: "뇌우",
-        }
+        try:
+            mr = requests.get(
+                "https://marine-api.open-meteo.com/v1/marine"
+                f"?latitude={lat}&longitude={lon}"
+                "&daily=wave_height_max,wave_period_max&timezone=Asia%2FSeoul"
+                f"&start_date={target_date}&end_date={target_date}",
+                timeout=10,
+            )
+            if mr.status_code == 200:
+                marine = mr.json().get("daily", {})
+        except Exception:
+            pass
+        codes = {0: "맑음", 1: "대체로 맑음", 2: "구름 조금", 3: "흐림", 61: "비", 63: "비", 80: "소나기", 95: "뇌우"}
         code = (daily.get("weathercode") or [0])[0]
         result.update({
             "ok": True,
@@ -725,7 +757,7 @@ def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
             "rain": (daily.get("precipitation_sum") or [0])[0],
             "wind": (daily.get("windspeed_10m_max") or [None])[0],
             "wind_dir": (daily.get("winddirection_10m_dominant") or [None])[0],
-            "sky": weather_codes.get(code, f"코드 {code}"),
+            "sky": codes.get(code, f"코드 {code}"),
             "wave": (marine.get("wave_height_max") or [None])[0],
             "wave_period": (marine.get("wave_period_max") or [None])[0],
         })
@@ -747,71 +779,30 @@ def wind_dir_text(deg) -> str:
     return dirs[int((deg + 22.5) // 45) % 8]
 
 
-# ==================== 선상24 링크 ====================
-
-def render_stat_row(items, accent="#1e88e5"):
-    """작은 카드 통계 행. items: [(라벨, 값, 보조), ...]"""
-    cells = []
-    for label, value, sub in items:
-        sub_html = (
-            f'<div style="font-size:11px;color:#888;margin-top:2px;">{sub}</div>'
-            if sub else ""
-        )
-        cells.append(
-            '<div style="flex:1;min-width:90px;'
-            'background:linear-gradient(145deg,#fafbfc,#ffffff);'
-            'border:1px solid #e0e0e0;border-left:3px solid ' + accent + ';'
-            'border-radius:8px;padding:8px 10px;'
-            'box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
-            f'<div style="font-size:11px;color:#666;margin-bottom:2px;">{label}</div>'
-            f'<div style="font-size:14px;font-weight:600;color:#222;line-height:1.3;">{value}</div>'
-            f'{sub_html}</div>'
-        )
-    html = (
-        '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px 0;">'
-        + "".join(cells)
-        + "</div>"
-    )
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def sunsang24_link(region: str, fish: str = "") -> str:
-    """선상24는 공개 검색 API가 없어 메인으로 연결."""
-    return "https://www.sunsang24.com/"
-
-
-# ==================== 메인 달력 (모바일 우선: 세로 리스트) ====================
+# ==================== 메인 달력 ====================
 month_days = cal.monthcalendar(year, month)
-month_name = f"{year}년 {month}월"
 weekday_names = ["월", "화", "수", "목", "금", "토", "일"]
-
-st.subheader(f"📅 {month_name} 물때 달력")
+st.subheader(f"📅 {year}년 {month}월 물때 달력")
 st.caption(f"{sea_area} · {region}  ·  날짜를 누르면 상세 정보")
-
-# 범례
 st.markdown(
-    """
-    <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:0.8rem;margin-bottom:0.5rem;">
-      <span><span style="color:#e85d4c;">●</span> 사리</span>
-      <span><span style="color:#43a047;">●</span> 중간</span>
-      <span><span style="color:#1e88e5;">●</span> 조금</span>
-    </div>
-    """,
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:0.8rem;margin-bottom:0.5rem;">'
+    '<span><span style="color:#e85d4c;">●</span> 사리</span>'
+    '<span><span style="color:#43a047;">●</span> 중간</span>'
+    '<span><span style="color:#1e88e5;">●</span> 조금</span></div>',
     unsafe_allow_html=True,
 )
-
 selected_day = st.session_state.get("selected_day")
-
-# 주 단위로 묶어 세로 배치 (폰에서도 깨지지 않음)
 week_num = 0
 for week in month_days:
     days_in_week = [d for d in week if d != 0]
     if not days_in_week:
         continue
     week_num += 1
-    first = days_in_week[0]
-    last = days_in_week[-1]
-    with st.expander(f"{week_num}주차  ({first}일 ~ {last}일)", expanded=(week_num <= 2 or (selected_day in days_in_week if selected_day else False))):
+    first, last = days_in_week[0], days_in_week[-1]
+    with st.expander(
+        f"{week_num}주차  ({first}일 ~ {last}일)",
+        expanded=(week_num <= 2 or (selected_day in days_in_week if selected_day else False)),
+    ):
         for day in days_in_week:
             lunar_day = get_lunar_day(year, month, day)
             mul = get_mul_ttae(lunar_day, sea_area)
@@ -820,13 +811,11 @@ for week in month_days:
             d = date(year, month, day)
             wd = weekday_names[d.weekday()]
             is_selected = selected_day == day
-
             color = {"사리": "#e85d4c", "중간": "#43a047", "조금": "#1e88e5"}.get(mul_type, "#9e9e9e")
             mark = "▶ " if is_selected else ""
             label = f"{mark}{day}일({wd})  ·  {mul}  ·  {range_cm}"
-
-            bcol1, bcol2 = st.columns([6, 1])
-            with bcol1:
+            b1, b2 = st.columns([6, 1])
+            with b1:
                 if st.button(label, key=f"day_{year}_{month}_{day}", use_container_width=True):
                     st.session_state["selected_day"] = day
                     st.session_state["selected_mul"] = mul
@@ -836,7 +825,7 @@ for week in month_days:
                     st.session_state.pop("selected_fishes", None)
                     st.session_state.pop("last_advice", None)
                     st.rerun()
-            with bcol2:
+            with b2:
                 st.markdown(
                     f"<div style='height:38px;border-radius:6px;background:{color};margin-top:4px;'></div>",
                     unsafe_allow_html=True,
@@ -851,7 +840,6 @@ if st.session_state.get("selected_day"):
     mul_type = st.session_state.get("selected_mul_type", "")
     range_cm = st.session_state.get("selected_range", "")
     date_str = st.session_state.get("selected_date_str", "")
-
     st.subheader(f"📌 {date_str} 상세 정보")
 
     tide_est = estimate_tide_times(mul_type)
@@ -875,7 +863,7 @@ if st.session_state.get("selected_day"):
         ], accent="#0277bd")
         st.caption(f"최근 {khoa_tide['last_cm']} cm · {khoa_tide['last_time']} · {khoa_tide['count']}건(10분)")
     else:
-        st.caption(f"조위 API: {khoa_tide.get('msg', '조회 실패')} · 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
+        st.caption(f"조위: {khoa_tide.get('msg')} · 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
 
     st.markdown("##### 🌊 국립해양조사원 파랑")
     rlat, rlon = REGION_COORDS.get(region, (37.5, 127.0))
@@ -884,97 +872,74 @@ if st.session_state.get("selected_day"):
         wave_code, wave_name, dist_km = nearest
         khoa_wave = fetch_khoa_wave(wave_code, get_data_go_kr_key())
         if khoa_wave.get("ok"):
-            wh = khoa_wave.get("wvhgt")
-            mwh = khoa_wave.get("max_wvhgt")
-            pd_ = khoa_wave.get("wvpd")
+            wh, mwh, pd_ = khoa_wave.get("wvhgt"), khoa_wave.get("max_wvhgt"), khoa_wave.get("wvpd")
             render_stat_row([
                 ("관측소", str(khoa_wave.get("station", wave_name)), f"{region}에서 약 {dist_km:.0f} km"),
                 ("유의파고", f"{wh} m" if wh is not None else "-", ""),
                 ("최대파고", f"{mwh} m" if mwh is not None else "-", ""),
-                ("파주기", f"{pd_} 초" if pd_ is not None else "-", str(khoa_wave.get("time", "") or "")),
+                ("파주기", f"{pd_} 초" if pd_ is not None else "-", str(khoa_wave.get("time") or "")),
             ], accent="#00838f")
             if dist_km > 150:
-                st.caption("⚠️ 관측소가 멀어 아래 Open-Meteo 파고를 함께 참고하세요.")
+                st.caption("⚠️ 관측소가 멀어 Open-Meteo 파고를 함께 참고하세요.")
         else:
-            st.caption(f"파랑 API: {khoa_wave.get('msg', '조회 실패')}")
+            st.caption(f"파랑: {khoa_wave.get('msg')}")
     else:
-        st.caption("가까운 파랑 관측소를 찾지 못했습니다.")
+        st.caption("가까운 파랑 관측소 없음")
 
     col1, col2 = st.columns([1, 2])
-
     with col1:
         st.markdown("### 🐟 추천 어종")
         if "selected_fishes" not in st.session_state:
-            with st.spinner("시즌 데이터 + AI 어종 추천 중..."):
-                fishes = recommend_fish_by_gpt(client, date_str, region, sea_area, mul, month)
-                st.session_state["selected_fishes"] = fishes
-        else:
-            fishes = st.session_state["selected_fishes"]
-
+            with st.spinner("시즌 + AI 어종 추천 중..."):
+                st.session_state["selected_fishes"] = recommend_fish_by_gpt(
+                    client, date_str, region, sea_area, mul, month
+                )
+        fishes = st.session_state["selected_fishes"]
         if st.button("🔄 다시 추천받기", key="refresh_fish"):
-            with st.spinner("다시 추천 중..."):
-                fishes = recommend_fish_by_gpt(client, date_str, region, sea_area, mul, month)
-                st.session_state["selected_fishes"] = fishes
-                st.rerun()
-
-        fish_icons = {
-            "광어": "🐟", "우럭": "🐠", "참돔": "🐡", "농어": "🎣",
-            "주꾸미": "🐙", "갑오징어": "🦑", "한치": "🦑", "볼락": "🐟",
-            "감성돔": "🐡", "방어": "🐟", "부시리": "🐟", "돌돔": "🐡",
-            "열기": "🐠", "가자미": "🐟", "노래미": "🐠", "도다리": "🐟", "대구": "🐟",
+            st.session_state["selected_fishes"] = recommend_fish_by_gpt(
+                client, date_str, region, sea_area, mul, month
+            )
+            st.rerun()
+        icons = {
+            "광어": "🐟", "우럭": "🐠", "참돔": "🐡", "농어": "🎣", "주꾸미": "🐙",
+            "갑오징어": "🦑", "한치": "🦑", "볼락": "🐟", "감성돔": "🐡", "방어": "🐟",
+            "부시리": "🐟", "열기": "🐠", "노래미": "🐠", "도다리": "🐟", "대구": "🐟",
         }
         for fish in fishes:
-            icon = fish_icons.get(fish, "🐟")
-            link = sunsang24_link(region, fish)
+            icon = icons.get(fish, "🐟")
             st.markdown(
-                f"""
-                <a href="{link}" target="_blank" style="text-decoration:none;">
-                  <div style="
-                    display:flex;align-items:center;gap:10px;
-                    background:linear-gradient(145deg,#f0f7ff,#fff);
-                    border:1.5px solid #90caf9;border-radius:10px;
-                    padding:10px 14px;margin-bottom:8px;
-                    box-shadow:0 2px 6px rgba(0,0,0,0.08);
-                    color:#1565c0;font-weight:600;font-size:15px;">
-                    <span style="font-size:22px;">{icon}</span>
-                    <span>{fish}</span>
-                    <span style="margin-left:auto;font-size:12px;color:#888;">선상24 →</span>
-                  </div>
-                </a>
-                """,
+                f'<a href="{sunsang24_link(region, fish)}" target="_blank" style="text-decoration:none;">'
+                f'<div style="display:flex;align-items:center;gap:10px;background:linear-gradient(145deg,#f0f7ff,#fff);'
+                f'border:1.5px solid #90caf9;border-radius:10px;padding:10px 14px;margin-bottom:8px;'
+                f'color:#1565c0;font-weight:600;font-size:15px;">'
+                f'<span style="font-size:22px;">{icon}</span><span>{fish}</span>'
+                f'<span style="margin-left:auto;font-size:12px;color:#888;">선상24 →</span></div></a>',
                 unsafe_allow_html=True,
             )
-
         st.link_button("선상24 전체 예약 페이지", sunsang24_link(region), use_container_width=True)
 
     with col2:
         st.markdown("### 🤖 AI 낚시조언")
         if st.button("AI 상세 조언 받기", type="primary"):
-            with st.spinner("조언 생성 중..."):
+            with st.spinner("조행기 검색 + 조언 생성 중..."):
                 st.session_state["last_advice"] = get_llm_advice(
                     client, date_str, region, sea_area, mul, fishes, month
                 )
         if "last_advice" in st.session_state:
             st.markdown(st.session_state["last_advice"])
         else:
-            st.info("버튼을 누르면 이 날짜·물때에 맞는 고급 실전 공략을 알려줘요.")
+            st.info("버튼을 누르면 'N월 어종 조행기' 검색을 반영한 실전 조언을 생성합니다.")
 
-    # ==================== 날씨 ====================
     st.divider()
     st.markdown("### 🌤️ 해당일 날씨 / 해상 정보")
-
     lat, lon = REGION_COORDS.get(region, (37.5, 127.0))
     weather = fetch_weather(lat, lon, date_str)
-
     if weather.get("ok"):
         tmax, tmin = weather.get("tmax"), weather.get("tmin")
         rain = weather.get("rain") or 0
         wind = weather.get("wind")
         temp_s = f"{tmin:.0f}~{tmax:.0f}°C" if tmax is not None and tmin is not None else "-"
-        wind_s = (
-            f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})"
-            if wind is not None else "-"
-        )
+        wind_s = f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})" if wind is not None else "-"
         wave = weather.get("wave")
         period = weather.get("wave_period")
         wave_s = f"{wave:.1f} m" if wave is not None else "-"
@@ -992,8 +957,5 @@ if st.session_state.get("selected_day"):
         if weather.get("out_of_range"):
             st.info(f"ℹ️ {msg}")
         else:
-            st.warning(f"날씨 정보를 불러오지 못했어요. ({msg})")
-
+            st.warning(f"날씨: {msg}")
     st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
-
-
