@@ -552,31 +552,88 @@ def get_seasonal_reference(sea: str, month: int) -> str:
     return data.get(sea, {}).get(month, "광어, 우럭, 참돔")
 
 
-def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str, month: int) -> list:
-    seasonal_ref = get_seasonal_reference(sea, month)
-    if client is None:
-        return [f.strip() for f in seasonal_ref.split(",")][:3]
-    try:
-        prompt = f"""한국 바다 선상낚시 조황 분석가로서.
-날짜:{date_str} 지역:{region}({sea}) 물때:{mul} 월:{month}월
-시즌 참고:{seasonal_ref}
-시즌 참고를 우선 반영해 선상 대표 어종 3가지만.
-형식: 어종1, 어종2, 어종3"""
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "형식만 정확히 답변."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=50, temperature=0.5, timeout=30,
-        )
-        text = response.choices[0].message.content.strip()
-        fishes = [f.strip() for f in text.replace("、", ",").split(",") if f.strip()]
-        return fishes[:3] if fishes else [f.strip() for f in seasonal_ref.split(",")][:3]
-    except Exception as e:
-        st.warning(f"어종 추천 API 오류: {type(e).__name__}: {e}")
-        return [f.strip() for f in seasonal_ref.split(",")][:3]
+def recommend_fish_by_naver(region: str, sea: str, month: int) -> list:
+    """네이버 검색 빈도 기반 추천 어종 3종
+    단계: 선상낚시 → 지역 → (어종 후보 카운트) → 검색월 반영
+    """
+    client_id, client_secret = get_naver_credentials()
+    seasonal_fallback = [f.strip() for f in get_seasonal_reference(sea, month).split(",")][:3]
 
+    if not client_id or not client_secret:
+        return seasonal_fallback
+
+    # 알려진 대상 어종 목록 (매칭용, 긴 이름 우선)
+    known = [
+        "주꾸미", "갑오징어", "한치", "광어", "우럭", "농어", "참돔", "감성돔",
+        "볼락", "열기", "방어", "부시리", "돌돔", "노래미", "도다리", "가자미",
+        "대구", "학꽁치", "붕장어", "삼치", "고등어",
+    ]
+
+    queries_stage = [
+        # 1) 선상낚시 조행기
+        f"선상낚시 조행기",
+        f"선상 조행기 {sea}",
+        # 2) 지역
+        f"{region} 선상 조행기",
+        f"{region} 선상낚시 조행기",
+        # 3) 검색월
+        f"{month}월 {region} 선상 조행기",
+        f"{month}월 선상낚시 조행기 {sea}",
+        f"{month}월 {region} 조행기",
+    ]
+
+    counts = {k: 0 for k in known}
+    month_counts = {k: 0 for k in known}
+    seen_titles = set()
+
+    for qi, q in enumerate(queries_stage):
+        for kind in ("blog", "cafe"):
+            try:
+                items = naver_search(q, client_id, client_secret, kind=kind, display=20)
+            except Exception:
+                items = []
+            for it in items:
+                title = it.get("title") or ""
+                if title[:40] in seen_titles:
+                    continue
+                seen_titles.add(title[:40])
+                blob = f"{title} {it.get('description') or ''}"
+                # 선상 관련 글만 약하게 가점 대상 (제목에 내륙만 있으면 스킵하지 않되 가중치)
+                weight = 1
+                if "선상" in blob:
+                    weight += 1
+                if region and region in blob:
+                    weight += 1
+                if f"{month}월" in blob:
+                    weight += 2
+                # 월 단계 쿼리면 월 카운트에도 반영
+                is_month_q = qi >= 4
+                for fish in known:
+                    if fish in blob:
+                        counts[fish] += weight
+                        if is_month_q or f"{month}월" in blob:
+                            month_counts[fish] += weight
+
+    # 월 매칭 빈도에 가중을 더해 최종 점수
+    final = {}
+    for fish in known:
+        final[fish] = counts[fish] + month_counts[fish] * 1.5
+
+    ranked = sorted(final.items(), key=lambda x: x[1], reverse=True)
+    top = [name for name, sc in ranked if sc > 0][:3]
+
+    if len(top) < 3:
+        for f in seasonal_fallback:
+            if f not in top:
+                top.append(f)
+            if len(top) >= 3:
+                break
+    return top[:3]
+
+
+def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str, month: int) -> list:
+    """하위 호환: 네이버 빈도 추천을 우선 사용"""
+    return recommend_fish_by_naver(region, sea, month)
 
 
 def naver_search(query: str, client_id: str, client_secret: str, kind: str = "blog", display: int = 15) -> list:
@@ -816,17 +873,20 @@ def get_llm_advice(client, date_str, region, sea, mul, fishes, month=None):
         seasonal = get_seasonal_reference(sea, month)
         method_guide = get_species_method_guide(fishes)
         prompt = f"""
-너는 네이버 등 웹의 '조행기' 글을 요약하는 실전 분석가다.
+너는 네이버 조행기 글을 요약하는 실전 분석가다.
 일반 AI 잔소리 금지. 조행기·카페에서 반복되는 현장 내용만 말한다.
 
-[조건] 날짜 {date_str} / {region}({sea}) / 물때 {mul} / 어종 {', '.join(fishes)} / 선상만
+[조건] 날짜 {date_str} / {region}({sea}) / 물때 {mul} / 선상만
+[추천 어종] {', '.join(fishes)}
+→ 이 어종은 네이버 선상 조행기 검색에서 지역·시기에 많이 등장한 순으로 고른 것이다.
+→ 가이드는 반드시 이 추천 어종만 다룬다. 다른 어종을 추가하지 말 것.
 
-[시즌] {seasonal}
+[시즌 참고] {seasonal}
 
-[현장 주류 공법 — 최우선]
+[현장 주류 공법 — 추천 어종 기준]
 {method_guide}
 
-[네이버 블로그·카페 검색 결과 — 'N월 어종 조행기' 키워드, 최신순. 이 내용을 최우선 반영]
+[네이버 조행기 검색 결과 — 어종→선상→월→지역 순차필터 후 선정. 최우선 반영]
 {web_refs}
 
 규칙:
@@ -1068,8 +1128,9 @@ if st.session_state.get("selected_day"):
     col1, col2 = st.columns([1, 2])
     with col1:
         st.markdown("### 🐟 추천 어종")
+        st.caption("네이버 선상 조행기 검색 빈도 기준 (지역·월 반영)")
         if "selected_fishes" not in st.session_state:
-            with st.spinner("시즌 + AI 어종 추천 중..."):
+            with st.spinner("네이버 조행기 검색으로 어종 집계 중..."):
                 st.session_state["selected_fishes"] = recommend_fish_by_gpt(
                     client, date_str, region, sea_area, mul, month
                 )
