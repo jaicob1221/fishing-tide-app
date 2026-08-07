@@ -56,24 +56,30 @@ TIDE_STATIONS = {
     "제주": "DT_0004",
 }
 
-# 파랑 관측소 (noonWave) - 해역 대표 지점
-WAVE_STATIONS = {
-    "인천": "KG_0024",
-    "평택": "KG_0024",
-    "보령": "KG_0024",
-    "군산": "KG_0024",
-    "목포": "KG_0024",
-    "속초": "KG_0024",
-    "강릉": "KG_0024",
-    "울진": "KG_0024",
-    "포항": "KG_0024",
-    "울산": "KG_0024",
-    "통영": "KG_0024",
-    "거제": "KG_0024",
-    "여수": "KG_0024",
-    "완도": "KG_0024",
-    "제주": "KG_0024",
-}
+# 파랑 관측소 목록 (코드, 이름, 위도, 경도) - 지역 좌표와 가장 가까운 곳 자동 선택
+WAVE_STATION_LIST = [
+    ("TW_0080", "우이도", 34.54305, 125.80277),      # 서남해 (목포·완도 쪽)
+    ("TW_0081", "생일도", 34.25872, 126.96027),      # 남해 서부
+    ("KG_0025", "남해동부", 34.22247, 128.41902),    # 통영·거제 쪽
+    ("KG_0024", "대한해협", 34.919, 129.12125),       # 부산·대한해협
+    ("TW_0062", "해운대", 35.14897, 129.17016),       # 부산 연안
+    ("TW_0075", "중문", 33.2345, 126.40955),          # 제주
+    ("KG_0021", "제주남부", 32.09041, 126.96586),     # 제주 남부
+]
+
+
+def nearest_wave_station(lat: float, lon: float):
+    """지역 좌표에서 가장 가까운 파랑 관측소 반환"""
+    best = None
+    best_d = 1e18
+    for code, name, slat, slon in WAVE_STATION_LIST:
+        d = (lat - slat) ** 2 + (lon - slon) ** 2
+        if d < best_d:
+            best_d = d
+            # 대략 km (위도 1도 ~ 111km)
+            km = (d ** 0.5) * 111
+            best = (code, name, km)
+    return best
 
 
 def get_data_go_kr_key():
@@ -613,22 +619,32 @@ if st.session_state.get("selected_day"):
     else:
         st.info(f"조위 API: {khoa_tide.get('msg', '조회 실패')} — 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
 
-    # ---- 국립해양조사원 실측 파랑 ----
+    # ---- 국립해양조사원 실측 파랑 (가장 가까운 관측소) ----
     st.markdown("#### 🌊 국립해양조사원 파랑 정보")
-    wave_code = WAVE_STATIONS.get(region, "KG_0024")
-    khoa_wave = fetch_khoa_wave(wave_code, get_data_go_kr_key())
-    if khoa_wave.get("ok"):
-        w1, w2, w3, w4 = st.columns(4)
-        w1.metric("관측소", khoa_wave["station"])
-        wh = khoa_wave.get("wvhgt")
-        w2.metric("유의파고", f"{wh} m" if wh is not None else "-")
-        mwh = khoa_wave.get("max_wvhgt")
-        w3.metric("최대파고", f"{mwh} m" if mwh is not None else "-")
-        pd_ = khoa_wave.get("wvpd")
-        w4.metric("파주기", f"{pd_} 초" if pd_ is not None else "-")
-        st.caption(f"관측시각: {khoa_wave.get('time', '-')}")
+    rlat, rlon = REGION_COORDS.get(region, (37.5, 127.0))
+    nearest = nearest_wave_station(rlat, rlon)
+    if nearest:
+        wave_code, wave_name, dist_km = nearest
+        khoa_wave = fetch_khoa_wave(wave_code, get_data_go_kr_key())
+        if khoa_wave.get("ok"):
+            w1, w2, w3, w4 = st.columns(4)
+            w1.metric("관측소", f"{khoa_wave['station']}")
+            wh = khoa_wave.get("wvhgt")
+            w2.metric("유의파고", f"{wh} m" if wh is not None else "-")
+            mwh = khoa_wave.get("max_wvhgt")
+            w3.metric("최대파고", f"{mwh} m" if mwh is not None else "-")
+            pd_ = khoa_wave.get("wvpd")
+            w4.metric("파주기", f"{pd_} 초" if pd_ is not None else "-")
+            st.caption(
+                f"관측시각: {khoa_wave.get('time', '-')} · "
+                f"{region}에서 약 {dist_km:.0f} km 거리의 최근접 파랑 관측소"
+            )
+            if dist_km > 150:
+                st.caption("⚠️ 선택한 지역과 관측소 거리가 멉니다. 아래 Open-Meteo 파고를 함께 참고하세요.")
+        else:
+            st.info(f"파랑 API: {khoa_wave.get('msg', '조회 실패')}")
     else:
-        st.info(f"파랑 API: {khoa_wave.get('msg', '조회 실패')}")
+        st.info("가까운 파랑 관측소를 찾지 못했습니다.")
 
     col1, col2 = st.columns([1, 2])
 
