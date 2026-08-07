@@ -55,6 +55,20 @@ div.stButton > button {
   padding: 0.45rem 0.35rem !important;
   min-height: 2.8rem !important;
 }
+/* 달력 날짜 버튼: 카드 안에서도 잘 보이게 */
+div.stButton > button[kind="secondary"] {
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  text-align: left !important;
+  justify-content: flex-start !important;
+  font-weight: 600 !important;
+  color: #222 !important;
+}
+div.stButton > button[kind="primary"] {
+  text-align: left !important;
+  justify-content: flex-start !important;
+}
 section[data-testid="stSidebar"] { min-width: 220px; }
 
 @media (max-width: 768px) {
@@ -1050,25 +1064,37 @@ for week in month_days:
             d = date(year, month, day)
             wd = weekday_names[d.weekday()]
             is_selected = selected_day == day
+            # 물때 색 → 날짜 블록 자체에 적용 (별도 색 블록 없음)
             color = {"사리": "#e85d4c", "중간": "#43a047", "조금": "#1e88e5"}.get(mul_type, "#9e9e9e")
+            bg = {"사리": "#fdecea", "중간": "#e8f5e9", "조금": "#e3f2fd"}.get(mul_type, "#f5f5f5")
             mark = "▶ " if is_selected else ""
             label = f"{mark}{day}일({wd})  ·  {mul}  ·  {range_cm}"
-            b1, b2 = st.columns([6, 1])
-            with b1:
-                if st.button(label, key=f"day_{year}_{month}_{day}", use_container_width=True):
-                    st.session_state["selected_day"] = day
-                    st.session_state["selected_mul"] = mul
-                    st.session_state["selected_mul_type"] = mul_type
-                    st.session_state["selected_range"] = range_cm
-                    st.session_state["selected_date_str"] = f"{year}-{month:02d}-{day:02d}"
-                    st.session_state.pop("selected_fishes", None)
-                    st.session_state.pop("last_advice", None)
-                    st.rerun()
-            with b2:
-                st.markdown(
-                    f"<div style='height:38px;border-radius:6px;background:{color};margin-top:4px;'></div>",
-                    unsafe_allow_html=True,
-                )
+            # 배경·왼쪽 강조선으로 물때 구분 (클릭 영역 = 날짜 버튼 하나)
+            st.markdown(
+                f"""
+                <div style="
+                    background:{bg};
+                    border-left:6px solid {color};
+                    border-radius:10px;
+                    padding:2px 4px 2px 2px;
+                    margin:4px 0 2px 0;
+                    border:1px solid {color}33;
+                    {'box-shadow:0 0 0 2px ' + color + '55;' if is_selected else ''}
+                ">
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(label, key=f"day_{year}_{month}_{day}", use_container_width=True,
+                         type="primary" if is_selected else "secondary"):
+                st.session_state["selected_day"] = day
+                st.session_state["selected_mul"] = mul
+                st.session_state["selected_mul_type"] = mul_type
+                st.session_state["selected_range"] = range_cm
+                st.session_state["selected_date_str"] = f"{year}-{month:02d}-{day:02d}"
+                st.session_state.pop("selected_fishes", None)
+                st.session_state.pop("last_advice", None)
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ==================== 상세 ====================
