@@ -222,6 +222,93 @@ def fetch_khoa_tide(obs_code: str, yyyymmdd: str, key: str) -> dict:
 
 
 @st.cache_data(ttl=900)
+
+@st.cache_data(ttl=1800)
+def fetch_fishing_index(req_date: str, region: str, key: str, gubun: str = "선상") -> dict:
+    """국립해양조사원 바다낚시지수 (fcstFishingv2)
+    req_date: YYYYMMDD, gubun: 선상|갯바위
+    """
+    if not key:
+        return {"ok": False, "msg": "DATA_GO_KR_SERVICE_KEY 없음"}
+    try:
+        url = "https://apis.data.go.kr/1192136/fcstFishingv2/GetFcstFishingApiServicev2"
+        params = {
+            "serviceKey": key,
+            "type": "json",
+            "reqDate": req_date,
+            "gubun": gubun,
+            "pageNo": 1,
+            "numOfRows": 300,
+        }
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code != 200:
+            return {"ok": False, "msg": f"HTTP {r.status_code}"}
+        data = r.json()
+        header = data.get("header") or {}
+        if str(header.get("resultCode", "")) not in ("00", "0"):
+            return {"ok": False, "msg": header.get("resultMsg", "API 오류")}
+
+        body = data.get("body") or {}
+        items = (body.get("items") or {}).get("item") or []
+        if isinstance(items, dict):
+            items = [items]
+        if not items:
+            return {"ok": False, "msg": "해당일 낚시지수 없음"}
+
+        lat0, lon0 = REGION_COORDS.get(region, (None, None))
+
+        def dist2(it):
+            try:
+                la = float(it.get("lat"))
+                lo = float(it.get("lot") or it.get("lon") or 0)
+                if lat0 is None:
+                    return 999
+                return (la - lat0) ** 2 + (lo - lon0) ** 2
+            except Exception:
+                return 999
+
+        # 지역 좌표에 가까운 포인트 우선
+        items_sorted = sorted(items, key=dist2)
+        near = [it for it in items_sorted if dist2(it) < (1.5 ** 2)]  # 대략 1.5도 이내
+        use = near if near else items_sorted[:20]
+
+        rows = []
+        for it in use[:12]:
+            rows.append({
+                "place": it.get("seafsPstnNm") or "-",
+                "species": it.get("seafsTgfshNm") or "-",
+                "index": it.get("totalIndex") or "-",
+                "score": "-",  # 이 API는 totalIndex(등급) 중심
+                "wave": (
+                    f"{it.get('minWvhgt')}~{it.get('maxWvhgt')} m"
+                    if it.get("minWvhgt") is not None else "-"
+                ),
+                "wtmp": (
+                    f"{it.get('minWtem')}~{it.get('maxWtem')} ℃"
+                    if it.get("minWtem") is not None else "-"
+                ),
+                "time": it.get("predcNoonSeCd") or "-",
+                "tide": it.get("tdlvHrCn") or "-",
+                "wind": (
+                    f"{it.get('minWspd')}~{it.get('maxWspd')} m/s"
+                    if it.get("minWspd") is not None else "-"
+                ),
+                "date": it.get("predcYmd") or req_date,
+            })
+
+        # 대표: 가장 가까운 포인트의 오전/오후 중 첫 행
+        return {
+            "ok": True,
+            "rows": rows,
+            "count": len(items),
+            "near_count": len(near),
+            "gubun": gubun,
+            "date": req_date,
+        }
+    except Exception as e:
+        return {"ok": False, "msg": f"{type(e).__name__}: {e}"}
+
+
 def fetch_khoa_wave(obs_code: str, key: str) -> dict:
     """국립해양조사원 국가해양관측망 실측 파랑"""
     if not key or not obs_code:
@@ -1126,7 +1213,34 @@ if st.session_state.get("selected_day"):
     else:
         st.caption(f"조위: {khoa_tide.get('msg')} · 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
 
+    st.markdown("##### 🎣 바다낚시지수 (선상)")
+    ymd_idx = date_str.replace("-", "")
+    fidx = fetch_fishing_index(ymd_idx, region, get_data_go_kr_key(), gubun="선상")
+    if fidx.get("ok") and fidx.get("rows"):
+        r0 = fidx["rows"][0]
+        render_stat_row([
+            ("구분", "선상", fidx.get("date", "")),
+            ("가까운 포인트", str(r0.get("place") or "-"), str(r0.get("time") or "")),
+            ("낚시지수", str(r0.get("index") or "-"), str(r0.get("tide") or "")),
+            ("수온", str(r0.get("wtmp") or "-"), ""),
+            ("파고", str(r0.get("wave") or "-"), str(r0.get("wind") or "")),
+        ], accent="#2e7d32")
+        lines = []
+        for row in fidx["rows"][:8]:
+            lines.append(
+                f"- **{row.get('place','-')}** · {row.get('species','-')} · "
+                f"**{row.get('index','-')}** ({row.get('time','-')})"
+            )
+        st.markdown("\n".join(lines))
+        st.caption(
+            f"국립해양조사원 바다낚시지수 · 전체 {fidx.get('count')}건 중 "
+            f"{region} 인근 {fidx.get('near_count', 0)}건 우선 표시"
+        )
+    else:
+        st.caption(f"낚시지수: {fidx.get('msg', '조회 실패')} · gubun=선상")
+
     st.markdown("##### 🌤️ 해당일 날씨 / 해상 정보")
+
     lat, lon = REGION_COORDS.get(region, (37.5, 127.0))
     weather = fetch_weather(lat, lon, date_str)
     if weather.get("ok"):
