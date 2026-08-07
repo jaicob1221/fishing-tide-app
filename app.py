@@ -411,14 +411,15 @@ SPECIES_METHODS = {
         "필수장비목록": "쭈갑대, 베이트릴, 봉돌 12~16호+, 에기(여러 종류·컬러), 애자, 합사·쇼크리더",
     },
 "갑오징어": {
-        "주력": "에깅(에기)",
-        "금지/비주류": "생미끼 중심 안내는 지양",
-        "채비": "에기 3.0~4.0호, 딥/노멀, 로드 엠에이치 파워",
-        "포인트": "수심 10~30m, 암초·골 주변",
-        "시즌팁": "가을 시즌 피크, 에기 크기·침강 속도 조절이 핵심",
-        "액션": "바닥 찍고 큰 저킹 후 폴링 구간 입질",
+        "주력": "에깅(에기 루어)",
+        "금지/비주류": "생미끼 중심 안내 지양. 에기 호수(3.0호 등)를 검색 결과 없이 임의로 쓰지 말 것",
+        "채비": "에깅 로드·릴, 에기, 필요 시 샤로/딥 타입은 조행기 원문 표현을 따름",
+        "에기표현": "조행기 원문 그대로: '에기', '수평에기', '왕눈이', 구체 상품명 등. 검색에 없는 호수·스펙 금지",
+        "포인트": "암초·골 주변, 수심은 조행기에 나온 표현을 우선",
+        "시즌팁": "가을 시즌 피크. 침강·타입은 조행기 언급을 따름",
+        "액션": "바닥 찍고 저킹 후 폴링 구간 입질이 조행기에 자주 등장",
     },
-    "한치": {
+"한치": {
         "주력": "한치 채비(이카메탈·오모리그·수평) 또는 에기",
         "금지/비주류": "바닥 생미끼 전용 안내 지양",
         "채비": "이카메탈/한치 스페셜, 야간 케미·라이트 활용",
@@ -427,14 +428,15 @@ SPECIES_METHODS = {
         "액션": "수심층 바꾸며 고패질, 입질 수심 고정",
     },
     "광어": {
-        "주력": "다운샷·타이라바·외바늘 생미끼(지역·시즌에 따라)",
-        "금지/비주류": "",
-        "채비": "다운샷 7~12호, 라바 60~120g대 또는 외바늘+청갯지렁이/미꾸라지 등",
-        "포인트": "모래·펄 바닥, 수심 15~40m",
-        "시즌팁": "서해 사리 전후 조류 받는 곳",
-        "액션": "바닥 유지하며 끌거나 고패질",
+        "주력": "다운샷(웜) + 생미끼 외바늘/타이라바 등 지역·선사에 따라 병행",
+        "금지/비주류": "생미끼만 안내하지 말 것. 웜 다운샷도 반드시 포함",
+        "채비": "① 다운샷: 지그헤드/싱커+웜(직선·컬테일 등 조행기 명칭). ② 생미끼: 외바늘+청갯지렁이·미꾸라지 등. ③ 타이라바는 조행기/선사에 언급될 때",
+        "에기표현": "",
+        "포인트": "모래·펄 바닥, 수심은 조행기 표현 우선",
+        "시즌팁": "서해 사리 전후 조류 받는 곳. 웜 컬러·크기는 조행기 원문 인용",
+        "액션": "다운샷은 바닥 유지하며 끌거나 톡톡 액션. 생미끼는 고패질·흘림. 조행기에 나온 방식 우선",
     },
-    "우럭": {
+"우럭": {
         "주력": "외바늘·카드채비 생미끼, 일부 지그헤드",
         "금지/비주류": "",
         "채비": "우럭 카드·외바늘, 미끼 청갯지렁이·크릴",
@@ -577,7 +579,7 @@ def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str
 
 
 
-def naver_search(query: str, client_id: str, client_secret: str, kind: str = "blog", display: int = 8) -> list:
+def naver_search(query: str, client_id: str, client_secret: str, kind: str = "blog", display: int = 15) -> list:
     """네이버 검색 API (blog / cafearticle)"""
     import re
     endpoints = {
@@ -589,11 +591,7 @@ def naver_search(query: str, client_id: str, client_secret: str, kind: str = "bl
         "X-Naver-Client-Id": client_id,
         "X-Naver-Client-Secret": client_secret,
     }
-    params = {
-        "query": query,
-        "display": display,
-        "sort": "date",  # 최신 조행기 우선
-    }
+    params = {"query": query, "display": display, "sort": "sim"}
     r = requests.get(url, headers=headers, params=params, timeout=10)
     if r.status_code != 200:
         return []
@@ -604,19 +602,82 @@ def naver_search(query: str, client_id: str, client_secret: str, kind: str = "bl
         desc = re.sub(r"<[^>]+>", "", it.get("description") or "").strip()
         link = it.get("link") or ""
         source = it.get("bloggername") or it.get("cafename") or kind
+        postdate = str(it.get("postdate") or "")
         if title:
             results.append({
                 "title": title,
-                "description": desc[:180],
+                "description": desc[:200],
                 "link": link,
                 "source": source,
                 "kind": kind,
+                "postdate": postdate,
+                "query": query,
             })
     return results
 
 
+def _item_text(it: dict) -> str:
+    return f"{it.get('title', '')} {it.get('description', '')}"
+
+
+def _filter_contains(items: list, keywords: list, mode: str = "any") -> list:
+    """제목+요약에 키워드 포함 필터. mode=any|all"""
+    out = []
+    for it in items:
+        t = _item_text(it)
+        hits = [kw for kw in keywords if kw and kw in t]
+        if mode == "all" and len(hits) == len([k for k in keywords if k]):
+            out.append(it)
+        elif mode == "any" and hits:
+            out.append(it)
+    return out
+
+
+def _recency_score(postdate: str) -> float:
+    if not postdate or len(postdate) != 8 or not postdate.isdigit():
+        return 0.0
+    try:
+        from datetime import datetime as _dt
+        d = _dt.strptime(postdate, "%Y%m%d").date()
+        age = (date.today() - d).days
+        if age <= 45:
+            return 20.0
+        if age <= 90:
+            return 12.0
+        if age <= 180:
+            return 5.0
+        if age > 400:
+            return -8.0
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def _final_score(it: dict, month: int, fishes: list, region: str) -> float:
+    t = _item_text(it)
+    score = 0.0
+    for i, fish in enumerate(fishes or []):
+        if fish and fish in t:
+            score += 15.0 if i == 0 else 8.0
+    if "조행기" in t:
+        score += 8.0
+    if "선상" in t:
+        score += 6.0
+    if f"{month}월" in t:
+        score += 10.0
+    if region and region in t:
+        score += 8.0
+    score += _recency_score(it.get("postdate") or "")
+    for kw in ("수평에기", "왕눈이", "에기", "다운샷", "웜"):
+        if kw in t:
+            score += 2.0
+    return score
+
+
 def fetch_johwang_snippets(region: str, sea: str, fishes: list, month: int) -> str:
-    """네이버 블로그·카페 검색 API로 'N월 어종 조행기' 수집"""
+    """순차 필터: 어종 조행기 → 선상 → 월 → 지역 → 점수 선정
+    각 단계 결과가 부족하면 해당 단계만 완화(스킵)
+    """
     client_id, client_secret = get_naver_credentials()
     if not client_id or not client_secret:
         return (
@@ -624,47 +685,120 @@ def fetch_johwang_snippets(region: str, sea: str, fishes: list, month: int) -> s
             "현장 주류 공법 데이터로 보완)"
         )
 
-    queries = []
-    for fish in (fishes or ["광어"])[:2]:
-        queries.append(f"{month}월 {fish} 조행기")
-        queries.append(f"{month}월 {fish} 선상 조행기")
-        queries.append(f"{region} {fish} 조행기")
-        queries.append(f"{fish} 선상 조행기")
+    primary = (fishes or ["광어"])[0]
+    secondary = fishes[1] if fishes and len(fishes) > 1 else None
+    MIN_KEEP = 5  # 이 미만이면 해당 필터 완화
 
-    collected = []
+    # ----- 1) 어종 조행기 검색 (기반 풀) -----
+    base_queries = [
+        f"{primary} 조행기",
+        f"{primary} 선상 조행기",
+        f"{month}월 {primary} 조행기",
+    ]
+    if secondary:
+        base_queries.append(f"{secondary} 조행기")
+
+    pool = []
     errors = []
-    for q in queries[:4]:
+    for q in base_queries:
         for kind in ("blog", "cafe"):
             try:
-                items = naver_search(q, client_id, client_secret, kind=kind, display=5)
-                for it in items:
-                    collected.append(it)
+                for it in naver_search(q, client_id, client_secret, kind=kind, display=15):
+                    it["query"] = q
+                    pool.append(it)
             except Exception as e:
                 errors.append(f"{kind}:{type(e).__name__}")
 
-    if not collected:
-        msg = f"(네이버 조행기 검색 결과 없음 — '{month}월 어종 조행기' 및 현장 주류 공법으로 보완)"
+    # 제목 중복 제거
+    uniq = {}
+    for it in pool:
+        key = (it.get("title") or "")[:48]
+        if key and key not in uniq:
+            uniq[key] = it
+    stage = list(uniq.values())
+    trace = [f"1) 어종 조행기 검색 풀: {len(stage)}건"]
+
+    if not stage:
+        msg = f"(네이버 조행기 검색 결과 없음 — '{primary} 조행기' 및 현장 주류 공법으로 보완)"
         if errors:
             msg += f" [오류: {', '.join(errors[:3])}]"
         return msg
 
-    # 제목 기준 중복 제거
-    uniq, seen = [], set()
-    for it in collected:
-        key = it["title"][:40]
-        if key in seen:
-            continue
-        seen.add(key)
-        kind_label = "블로그" if it["kind"] == "blog" else "카페"
-        line = f"- [{kind_label}/{it['source']}] {it['title']}"
-        if it.get("description"):
-            line += f": {it['description']}"
-        uniq.append(line)
-        if len(uniq) >= 14:
-            break
+    # 어종 키워드 포함 강제 (1순위 필터)
+    species_kw = [primary] + ([secondary] if secondary else [])
+    filtered = _filter_contains(stage, species_kw, mode="any")
+    if len(filtered) >= MIN_KEEP:
+        stage = filtered
+        trace.append(f"1-b) 어종명 포함 필터: {len(stage)}건")
+    else:
+        trace.append(f"1-b) 어종명 필터 완화(유지 {len(stage)}건)")
 
-    header = f"[네이버 검색] '{month}월 조행기' 등 {len(uniq)}건 (블로그+카페, 최신순)"
-    return header + "\n" + "\n".join(uniq)
+    # ----- 2) 선상 필터 -----
+    filtered = _filter_contains(stage, ["선상"], mode="any")
+    if len(filtered) >= MIN_KEEP:
+        stage = filtered
+        trace.append(f"2) 선상 필터: {len(stage)}건")
+    else:
+        trace.append(f"2) 선상 필터 완화(후보 부족 {len(filtered)}건)")
+
+    # ----- 3) 검색월 필터 -----
+    month_kw = [f"{month}월", f"{month} 월"]
+    # 시즌 보조 키워드
+    season_extra = {
+        8: ["초가을", "여름"], 9: ["가을", "초가을"], 10: ["가을"],
+        11: ["늦가을", "초겨울"], 12: ["겨울"], 1: ["겨울"], 2: ["겨울"],
+        3: ["봄", "초봄"], 4: ["봄"], 5: ["봄", "초여름"], 6: ["여름"], 7: ["여름"],
+    }
+    month_kw += season_extra.get(month, [])
+    filtered = _filter_contains(stage, month_kw, mode="any")
+    if len(filtered) >= MIN_KEEP:
+        stage = filtered
+        trace.append(f"3) {month}월·시즌 필터: {len(stage)}건")
+    else:
+        # ±1개월 완화
+        near = [f"{month}월"]
+        if month > 1:
+            near.append(f"{month-1}월")
+        if month < 12:
+            near.append(f"{month+1}월")
+        filtered2 = _filter_contains(stage, near, mode="any")
+        if len(filtered2) >= 3:
+            stage = filtered2
+            trace.append(f"3) 월 필터 완화(±1개월): {len(stage)}건")
+        else:
+            trace.append(f"3) 월 필터 완화(유지 {len(stage)}건)")
+
+    # ----- 4) 지역 필터 -----
+    region_kw = [region] if region else []
+    if sea:
+        region_kw.append(sea)
+    filtered = _filter_contains(stage, region_kw, mode="any")
+    if len(filtered) >= 3:
+        stage = filtered
+        trace.append(f"4) 지역·해역 필터: {len(stage)}건")
+    else:
+        trace.append(f"4) 지역 필터 완화(후보 부족 {len(filtered)}건)")
+
+    # ----- 5) 점수 정렬 최종 N건 -----
+    for it in stage:
+        it["_score"] = _final_score(it, month, fishes or [], region or "")
+    ranked = sorted(stage, key=lambda x: x.get("_score", 0), reverse=True)[:12]
+    trace.append(f"5) 점수 상위: {len(ranked)}건")
+
+    lines = ["[네이버 순차필터] " + " → ".join(trace)]
+    for it in ranked:
+        kind_label = "블로그" if it["kind"] == "blog" else "카페"
+        pd = it.get("postdate") or ""
+        pd_s = f"{pd[:4]}-{pd[4:6]}-{pd[6:]}" if len(pd) == 8 else ""
+        head = f"- [{kind_label}/{it['source']}"
+        if pd_s:
+            head += f"/{pd_s}"
+        head += f"] {it['title']}"
+        if it.get("description"):
+            head += f": {it['description']}"
+        lines.append(head)
+
+    return "\n".join(lines)
 
 
 
@@ -696,23 +830,24 @@ def get_llm_advice(client, date_str, region, sea, mul, fishes, month=None):
 {web_refs}
 
 규칙:
-1) 주꾸미=에기+봉돌(12~16호)·애자·2단채비가 주류. 생미끼 주력 금지.
-2) 에기·루어 이름은 네이버 검색 결과에 적힌 명칭을 그대로 인용할 것.
-   - 허용 예: "에기", "수평에기", "왕눈이", 조행기에 나온 상품명
-   - 금지: 검색 결과에 없는 "에기 3.0호", "3.5호" 등 호수 추론·변환 (주꾸미 에기는 조행기에서 호수로 거의 안 씀)
-3) 봉돌 호수·2단 채비 등 검색/주류 공법에 있는 숫자만 사용. 없으면 지어내지 말 것.
-4) 조행기 제목/요약에 나온 채비·물때·수심을 우선 반영.
+1) 주꾸미=에기+봉돌(12~16호)·애자·2단채비 주류. 생미끼 주력 금지.
+2) 갑오징어·주꾸미 에기 이름은 네이버 검색 원문 그대로만 사용.
+   - 허용: "에기", "수평에기", "왕눈이", 상품명 등 글에 실제로 적힌 말
+   - 금지: 검색에 없는 "에기 3.0호/3.5호/4.0호" 등 호수 추론
+3) 광어는 반드시 (A) 웜 다운샷 과 (B) 생미끼 를 함께 안내. 생미끼만 쓰지 말 것.
+   - 웜/다운샷 명칭도 검색 원문 우선, 없으면 '다운샷+웜' 수준만.
+4) 봉돌 호수 등 숫자는 검색·주류 공법에 있을 때만.
 5) 반말, 800~1300자.
 
 ### 조황 분위기
-### 주력 공법 (어종별) — 장비·채비·액션 (에기 명칭은 원문 인용)
+### 주력 공법 (어종별) — 에기·웜 명칭은 원문 인용
 ### 물때·운영
 ### 바로 체크할 것
 """
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "조행기 요약 전문가. 주꾸미는 에기+봉돌 주력. 에기 호수(3.0호 등) 임의 생성 금지. 검색 원문 명칭만 인용. 생미끼 주력 금지. 반말."},
+                {"role": "system", "content": "조행기 요약 전문가. 주꾸미·갑오징어 에기 호수 임의 생성 금지, 검색 원문 명칭만. 광어는 웜 다운샷+생미끼 함께. 반말."},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=1400, temperature=0.5, timeout=60,
