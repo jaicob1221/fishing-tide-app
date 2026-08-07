@@ -14,17 +14,40 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("🌊 물때 선상낚시 도우미")
-st.caption("지역·월별 물때 달력 + 실측 날씨 + AI 추천 어종 + 낚시 조언")
-
-
-# 모바일 대응 CSS
+# 모바일·제목 잘림 대응 CSS
 st.markdown("""
 <style>
-/* 전체 여백 줄이기 */
-.block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 900px; }
+.block-container {
+  padding-top: 1rem;
+  padding-bottom: 2rem;
+  max-width: 900px;
+  overflow: visible !important;
+}
+/* 기본 타이틀 숨기고 커스텀 헤더 사용 */
+h1 { display: none !important; }
 
-/* 버튼 텍스트 크기·줄간격 (달력용) */
+.app-header {
+  margin: 0 0 0.4rem 0;
+  padding: 0;
+  overflow: visible;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+.app-header .title {
+  font-size: 1.55rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: inherit;
+  margin: 0;
+}
+.app-header .subtitle {
+  font-size: 0.88rem;
+  color: #666;
+  margin-top: 0.25rem;
+  line-height: 1.4;
+  word-break: keep-all;
+}
+
 div.stButton > button {
   white-space: pre-line !important;
   line-height: 1.25 !important;
@@ -32,18 +55,27 @@ div.stButton > button {
   padding: 0.45rem 0.35rem !important;
   min-height: 2.8rem !important;
 }
-
-/* 사이드바 모바일 */
 section[data-testid="stSidebar"] { min-width: 220px; }
 
 @media (max-width: 768px) {
   .block-container { padding-left: 0.6rem; padding-right: 0.6rem; }
-  h1 { font-size: 1.35rem !important; }
+  .app-header .title { font-size: 1.25rem; }
+  .app-header .subtitle { font-size: 0.8rem; }
   h2, h3 { font-size: 1.1rem !important; }
   div.stButton > button { font-size: 0.9rem !important; padding: 0.55rem 0.5rem !important; }
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown(
+    """
+<div class="app-header">
+  <p class="title">🌊 물때 선상낚시 도우미</p>
+  <p class="subtitle">지역·월별 물때 달력 · 실측 날씨 · AI 추천 어종 · 낚시 조언</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 
 
@@ -369,15 +401,16 @@ def estimate_tide_times(mul_type: str) -> dict:
 # 조행기·카페에서 실제로 많이 쓰는 방법. AI가 생미끼 등 비주류로 빗나가지 않게 고정.
 SPECIES_METHODS = {
     "주꾸미": {
-        "주력": "에깅(에기 루어) — 생미끼 주력 안내 금지",
-        "금지/비주류": "생미끼를 기본 공법으로 제시 금지",
-        "채비": "쭈갑대(또는 가벼운 낚싯대)+베이트릴, 봉돌 12~16호 이상, 에기, 애자(스냅). 조류에 따라 단차·가지줄 길이 조절하는 2단 채비가 조행기에 자주 등장. 형형 에기에 과메기를 쓰는 사례도 있음",
-        "포인트": "바닥 주꾸미 — 모래·자갈·패류 지대, 수심은 배·물때에 따라 탐색. 밑걸림 방지 위해 바닥을 지속 터치",
-        "시즌팁": "서해는 조수 간만 차가 커 물때 선택이 중요. 조수 간만 적은 조금 물때가 유리하다는 조행기·안내가 많음. 9월 초반은 씨알·수심 다양",
-        "액션": "에기를 바닥에 두고 짧게 들어 올렸다 내리며 탐색. 너무 세게 저킹하기보다 바닥 감각 유지. 반응 좋은 에기 컬러·호수는 그날 조과에 맞춰 교체",
-        "필수장비목록": "쭈갑대, 베이트릴, 봉돌 12~16호+, 에기(여러 컬러), 애자, 합사·쇼크리더",
+        "주력": "에기(루어) — 선상은 봉돌+에기 수직 탐색이 조행기 주류",
+        "금지/비주류": "생미끼를 주 공법으로 안내 금지. 에기에 '3.0호·3.5호' 같은 호수 표기를 임의로 붙이지 말 것(주꾸미 에기는 조행기에서 호수로 거의 안 씀)",
+        "채비": "쭈갑대(또는 가벼운 낚싯대)+베이트릴, 봉돌 12~16호(조류·수심에 따라), 에기, 애자. 조류에 따라 2단 채비(단차·가지줄 조절)가 조행기에 자주 등장",
+        "에기표현": "조행기·카페 원문에 나온 그대로: '에기', '수평에기', '왕눈이(에기)', 구체 상품명 등. 검색 결과에 없는 호수·스펙을 지어내지 말 것",
+        "포인트": "바닥 주꾸미 — 모래·자갈·패류 지대. 밑걸림 방지 위해 바닥을 지속 터치. 서해는 조수 간만·물때 확인",
+        "시즌팁": "서해는 조수 간만 차가 커 물때 선택이 중요. 조금 물때가 유리하다는 조행기가 많음",
+        "액션": "에기를 바닥에 두고 짧게 들어 올렸다 내리며 탐색. 바닥 감각 유지. 반응 좋은 에기는 그날 조행기에 언급된 종류·상품명 위주로 교체",
+        "필수장비목록": "쭈갑대, 베이트릴, 봉돌 12~16호+, 에기(여러 종류·컬러), 애자, 합사·쇼크리더",
     },
-    "갑오징어": {
+"갑오징어": {
         "주력": "에깅(에기)",
         "금지/비주류": "생미끼 중심 안내는 지양",
         "채비": "에기 3.0~4.0호, 딥/노멀, 로드 엠에이치 파워",
@@ -469,18 +502,25 @@ def get_species_method_guide(fishes: list) -> str:
             lines.append(f"- {f}: 해당 지역 조행기에서 가장 많이 쓰는 선상 주력 채비를 따를 것")
             continue
         extra = info.get("필수장비목록", "")
-        extra_line = f"\n  · 필수장비: {extra}" if extra else ""
-        lines.append(
-            f"- {f}\n"
-            f"  · 주력 공법: {info['주력']}\n"
-            f"  · 채비: {info['채비']}\n"
-            f"  · 포인트: {info['포인트']}\n"
-            f"  · 시즌팁: {info['시즌팁']}\n"
-            f"  · 액션: {info['액션']}\n"
-            f"  · 주의: {info['금지/비주류'] or '조행기 주류 방식만 안내'}"
-            + extra_line
-        )
+        egi = info.get("에기표현", "")
+        parts = [
+            f"- {f}",
+            f"  · 주력 공법: {info['주력']}",
+            f"  · 채비: {info['채비']}",
+        ]
+        if egi:
+            parts.append(f"  · 에기 명칭 규칙: {egi}")
+        parts.extend([
+            f"  · 포인트: {info['포인트']}",
+            f"  · 시즌팁: {info['시즌팁']}",
+            f"  · 액션: {info['액션']}",
+            f"  · 주의: {info['금지/비주류'] or '조행기 주류 방식만 안내'}",
+        ])
+        if extra:
+            parts.append(f"  · 필수장비: {extra}")
+        lines.append("\n".join(parts))
     return "\n".join(lines) if lines else "(어종 공략 데이터 없음)"
+
 
 
 def get_seasonal_reference(sea: str, month: int) -> str:
@@ -657,18 +697,22 @@ def get_llm_advice(client, date_str, region, sea, mul, fishes, month=None):
 
 규칙:
 1) 주꾸미=에기+봉돌(12~16호)·애자·2단채비가 주류. 생미끼 주력 금지.
-2) 조행기 제목/요약에 나온 채비·물때·수심을 반영.
-3) 반말, 800~1300자.
+2) 에기·루어 이름은 네이버 검색 결과에 적힌 명칭을 그대로 인용할 것.
+   - 허용 예: "에기", "수평에기", "왕눈이", 조행기에 나온 상품명
+   - 금지: 검색 결과에 없는 "에기 3.0호", "3.5호" 등 호수 추론·변환 (주꾸미 에기는 조행기에서 호수로 거의 안 씀)
+3) 봉돌 호수·2단 채비 등 검색/주류 공법에 있는 숫자만 사용. 없으면 지어내지 말 것.
+4) 조행기 제목/요약에 나온 채비·물때·수심을 우선 반영.
+5) 반말, 800~1300자.
 
 ### 조황 분위기
-### 주력 공법 (어종별) — 장비·채비·액션을 조행기처럼 구체적으로
+### 주력 공법 (어종별) — 장비·채비·액션 (에기 명칭은 원문 인용)
 ### 물때·운영
 ### 바로 체크할 것
 """
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "조행기 요약 전문가. 주꾸미는 에기+봉돌 주력. 생미끼 주력 금지. 반말."},
+                {"role": "system", "content": "조행기 요약 전문가. 주꾸미는 에기+봉돌 주력. 에기 호수(3.0호 등) 임의 생성 금지. 검색 원문 명칭만 인용. 생미끼 주력 금지. 반말."},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=1400, temperature=0.5, timeout=60,
