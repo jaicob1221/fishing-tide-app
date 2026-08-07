@@ -17,6 +17,36 @@ st.set_page_config(
 st.title("🌊 물때 선상낚시 도우미")
 st.caption("지역·월별 물때 달력 + 실측 날씨 + AI 추천 어종 + 낚시 조언")
 
+
+# 모바일 대응 CSS
+st.markdown("""
+<style>
+/* 전체 여백 줄이기 */
+.block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 900px; }
+
+/* 버튼 텍스트 크기·줄간격 (달력용) */
+div.stButton > button {
+  white-space: pre-line !important;
+  line-height: 1.25 !important;
+  font-size: 0.85rem !important;
+  padding: 0.45rem 0.35rem !important;
+  min-height: 2.8rem !important;
+}
+
+/* 사이드바 모바일 */
+section[data-testid="stSidebar"] { min-width: 220px; }
+
+@media (max-width: 768px) {
+  .block-container { padding-left: 0.6rem; padding-right: 0.6rem; }
+  h1 { font-size: 1.35rem !important; }
+  h2, h3 { font-size: 1.1rem !important; }
+  div.stButton > button { font-size: 0.9rem !important; padding: 0.55rem 0.5rem !important; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+
 # ==================== 지역 좌표 (날씨용) ====================
 REGION_COORDS = {
     "인천": (37.4563, 126.7052),
@@ -531,30 +561,39 @@ def sunsang24_link(region: str, fish: str = "") -> str:
     return "https://www.sunsang24.com/"
 
 
-# ==================== 메인 달력 ====================
+# ==================== 메인 달력 (모바일 우선: 세로 리스트) ====================
 month_days = cal.monthcalendar(year, month)
 month_name = f"{year}년 {month}월"
 weekday_names = ["월", "화", "수", "목", "금", "토", "일"]
 
-st.subheader(f"📅 {month_name} 물때 달력  ({sea_area} · {region})")
+st.subheader(f"📅 {month_name} 물때 달력")
+st.caption(f"{sea_area} · {region}  ·  날짜를 누르면 상세 정보")
 
-cols = st.columns(7)
-for i, day_name in enumerate(weekday_names):
-    cols[i].markdown(
-        f"<div style='text-align:center;font-weight:700;padding:4px 0;color:#555;'>{day_name}</div>",
-        unsafe_allow_html=True,
-    )
+# 범례
+st.markdown(
+    """
+    <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:0.8rem;margin-bottom:0.5rem;">
+      <span><span style="color:#e85d4c;">●</span> 사리</span>
+      <span><span style="color:#43a047;">●</span> 중간</span>
+      <span><span style="color:#1e88e5;">●</span> 조금</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 selected_day = st.session_state.get("selected_day")
 
+# 주 단위로 묶어 세로 배치 (폰에서도 깨지지 않음)
+week_num = 0
 for week in month_days:
-    cols = st.columns(7)
-    for i, day in enumerate(week):
-        with cols[i]:
-            if day == 0:
-                st.write("")
-                continue
-
+    days_in_week = [d for d in week if d != 0]
+    if not days_in_week:
+        continue
+    week_num += 1
+    first = days_in_week[0]
+    last = days_in_week[-1]
+    with st.expander(f"{week_num}주차  ({first}일 ~ {last}일)", expanded=(week_num <= 2 or (selected_day in days_in_week if selected_day else False))):
+        for day in days_in_week:
             lunar_day = get_lunar_day(year, month, day)
             mul = get_mul_ttae(lunar_day, sea_area)
             mul_type = get_mul_type(mul)
@@ -563,27 +602,26 @@ for week in month_days:
             wd = weekday_names[d.weekday()]
             is_selected = selected_day == day
 
-            # 카드 정보 전부 버튼 라벨에 (한 번 클릭)
-            label = f"{day}일({wd})\n{mul}\n{range_cm}"
-            if st.button(label, key=f"day_{year}_{month}_{day}", use_container_width=True):
-                st.session_state["selected_day"] = day
-                st.session_state["selected_mul"] = mul
-                st.session_state["selected_mul_type"] = mul_type
-                st.session_state["selected_range"] = range_cm
-                st.session_state["selected_date_str"] = f"{year}-{month:02d}-{day:02d}"
-                st.session_state.pop("selected_fishes", None)
-                st.session_state.pop("last_advice", None)
-                st.rerun()
+            color = {"사리": "#e85d4c", "중간": "#43a047", "조금": "#1e88e5"}.get(mul_type, "#9e9e9e")
+            mark = "▶ " if is_selected else ""
+            label = f"{mark}{day}일({wd})  ·  {mul}  ·  {range_cm}"
 
-            color_bar = {
-                "사리": "#e85d4c",
-                "중간": "#43a047",
-                "조금": "#1e88e5",
-            }.get(mul_type, "#9e9e9e")
-            st.markdown(
-                f"<div style='height:4px;border-radius:2px;background:{color_bar};margin-top:-6px;margin-bottom:8px;'></div>",
-                unsafe_allow_html=True,
-            )
+            bcol1, bcol2 = st.columns([6, 1])
+            with bcol1:
+                if st.button(label, key=f"day_{year}_{month}_{day}", use_container_width=True):
+                    st.session_state["selected_day"] = day
+                    st.session_state["selected_mul"] = mul
+                    st.session_state["selected_mul_type"] = mul_type
+                    st.session_state["selected_range"] = range_cm
+                    st.session_state["selected_date_str"] = f"{year}-{month:02d}-{day:02d}"
+                    st.session_state.pop("selected_fishes", None)
+                    st.session_state.pop("last_advice", None)
+                    st.rerun()
+            with bcol2:
+                st.markdown(
+                    f"<div style='height:38px;border-radius:6px;background:{color};margin-top:4px;'></div>",
+                    unsafe_allow_html=True,
+                )
 
 
 # ==================== 상세 ====================
