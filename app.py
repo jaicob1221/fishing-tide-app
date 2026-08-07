@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 st.title("🌊 물때 선상낚시 도우미")
-st.caption("지역·월별 물때 달력 + 실측 날씨 + ChatGPT 추천 어종 + 낚시 조언")
+st.caption("지역·월별 물때 달력 + 실측 날씨 + AI 추천 어종 + 낚시 조언")
 
 # ==================== 지역 좌표 (날씨용) ====================
 REGION_COORDS = {
@@ -239,32 +239,48 @@ def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str
 
 def get_llm_advice(client, date_str: str, region: str, sea: str, mul: str, fishes: list) -> str:
     if client is None:
-        return "⚠️ secrets에 OpenAI API Key를 설정하면 ChatGPT 조언을 받을 수 있어요."
+        return "⚠️ secrets에 OpenAI API Key를 설정하면 AI 낚시조언을 받을 수 있어요."
     try:
         prompt = f"""
-한국 바다낚시 전문가로서 초보 조사에게 반말로 조언해.
+당신은 한국 바다 선상낚시 실전 경력 20년 이상의 전문 가이드다.
+초보용이 아니라, 중급~고급 조사도 바로 현장에 적용할 수 있는 수준의 디테일로 반말 톤으로 조언해라.
 
-날짜: {date_str}
-지역: {region} ({sea})
-물때: {mul}
-추천 어종: {', '.join(fishes)}
+[조건]
+- 날짜: {date_str}
+- 지역: {region} ({sea})
+- 물때: {mul}
+- 대상 어종: {', '.join(fishes)}
 
-포함 내용:
-1) 이 물때에 이 어종이 좋은 이유
-2) 어종별 핵심 기법 1~2가지 (채비·포인트·시간)
-3) 출조 시 주의점
+아래 구조를 지켜 작성하되, 각 항목을 구체적으로 써라. (총 800~1200자 수준)
 
-400자 이내, 핵심만.
+1) 물때·조류 해석
+- 이 물때의 조류 세기·방향 변화 타이밍
+- 만조/간조 전후 몇 시간이 핵심인지, 왜 그런지
+
+2) 어종별 실전 공략 (어종마다 구분)
+- 추천 채비 (바늘 호수, 목줄 길이·호수, 봉돌, 케미/야광 여부 등)
+- 미끼·집어제 운용
+- 포인트 유형 (수심대, 지형: 골, 턱, 암초, 조류받이 등)
+- 액션·템포 (고패질 간격, 슬랙 관리, 입질 패턴)
+
+3) 시간대별 대응
+- 새벽 / 오전 / 오후 / 해질녘 각각 어디를 어떻게 노릴지
+
+4) 현장 변수 대응
+- 바람·파고·탁도 변화에 따른 채비·포인트 전환
+- 입질이 없을 때 우선 바꿔볼 순서
+
+추상적인 말 대신 숫자·호수·시간·수심을 최대한 넣어라.
 """
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "친절하고 실용적인 한국 바다낚시 전문가."},
+                {"role": "system", "content": "한국 바다 선상낚시 실전 전문가. 고급 조사 수준의 구체적 조언을 반말로 제공한다."},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=600,
-            temperature=0.7,
-            timeout=30,
+            max_tokens=1200,
+            temperature=0.65,
+            timeout=45,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -448,7 +464,7 @@ if st.session_state.get("selected_day"):
     with col1:
         st.markdown("### 🐟 추천 어종")
         if "selected_fishes" not in st.session_state:
-            with st.spinner("시즌 데이터 + ChatGPT 추천 중..."):
+            with st.spinner("시즌 데이터 + AI 어종 추천 중..."):
                 fishes = recommend_fish_by_gpt(client, date_str, region, sea_area, mul, month)
                 st.session_state["selected_fishes"] = fishes
         else:
@@ -491,8 +507,8 @@ if st.session_state.get("selected_day"):
         st.link_button("선상24 전체 예약 페이지", sunsang24_link(region), use_container_width=True)
 
     with col2:
-        st.markdown("### 🤖 ChatGPT 낚시 조언")
-        if st.button("상세 조언 받기", type="primary"):
+        st.markdown("### 🤖 AI 낚시조언")
+        if st.button("AI 상세 조언 받기", type="primary"):
             with st.spinner("조언 생성 중..."):
                 st.session_state["last_advice"] = get_llm_advice(
                     client, date_str, region, sea_area, mul, fishes
@@ -500,7 +516,7 @@ if st.session_state.get("selected_day"):
         if "last_advice" in st.session_state:
             st.markdown(st.session_state["last_advice"])
         else:
-            st.info("버튼을 누르면 이 날짜·물때에 맞는 낚시 기법을 알려줘요.")
+            st.info("버튼을 누르면 이 날짜·물때에 맞는 고급 실전 공략을 알려줘요.")
 
     # ==================== 날씨 ====================
     st.divider()
@@ -538,13 +554,3 @@ if st.session_state.get("selected_day"):
     st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
 
 
-# ==================== 하단 ====================
-st.divider()
-st.markdown("""
-**참고**
-- OpenAI 키: Streamlit secrets (`OPENAI_API_KEY`)
-- 로컬에서 SSL 오류 시 secrets에 `SSL_INSECURE = true` 추가
-- 물때·조차·만조/간조 시각은 음력·유형 기반 추정 (추후 국립해양조사원 API로 교체 가능)
-- 날씨·파고: Open-Meteo (무료, 키 불필요)
-- 선상24: 공식 공개 API 없음 → 사이트 연결
-""")
