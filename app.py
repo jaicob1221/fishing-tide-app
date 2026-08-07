@@ -952,7 +952,8 @@ def render_stat_row(items, accent="#1e88e5"):
 
 
 def sunsang24_link(region: str, fish: str = "") -> str:
-    return "https://www.sunsang24.com/"
+    # 선상 예약 목록 페이지
+    return "https://www.sunsang24.com/ship/list/"
 
 
 @st.cache_data(ttl=1800)
@@ -1125,26 +1126,34 @@ if st.session_state.get("selected_day"):
     else:
         st.caption(f"조위: {khoa_tide.get('msg')} · 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
 
-    st.markdown("##### 🌊 국립해양조사원 파랑")
-    rlat, rlon = REGION_COORDS.get(region, (37.5, 127.0))
-    nearest = nearest_wave_station(rlat, rlon)
-    if nearest:
-        wave_code, wave_name, dist_km = nearest
-        khoa_wave = fetch_khoa_wave(wave_code, get_data_go_kr_key())
-        if khoa_wave.get("ok"):
-            wh, mwh, pd_ = khoa_wave.get("wvhgt"), khoa_wave.get("max_wvhgt"), khoa_wave.get("wvpd")
-            render_stat_row([
-                ("관측소", str(khoa_wave.get("station", wave_name)), f"{region}에서 약 {dist_km:.0f} km"),
-                ("유의파고", f"{wh} m" if wh is not None else "-", ""),
-                ("최대파고", f"{mwh} m" if mwh is not None else "-", ""),
-                ("파주기", f"{pd_} 초" if pd_ is not None else "-", str(khoa_wave.get("time") or "")),
-            ], accent="#00838f")
-            if dist_km > 150:
-                st.caption("⚠️ 관측소가 멀어 Open-Meteo 파고를 함께 참고하세요.")
-        else:
-            st.caption(f"파랑: {khoa_wave.get('msg')}")
+    st.markdown("##### 🌤️ 해당일 날씨 / 해상 정보")
+    lat, lon = REGION_COORDS.get(region, (37.5, 127.0))
+    weather = fetch_weather(lat, lon, date_str)
+    if weather.get("ok"):
+        tmax, tmin = weather.get("tmax"), weather.get("tmin")
+        rain = weather.get("rain") or 0
+        wind = weather.get("wind")
+        temp_s = f"{tmin:.0f}~{tmax:.0f}°C" if tmax is not None and tmin is not None else "-"
+        wind_s = f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})" if wind is not None else "-"
+        wave = weather.get("wave")
+        period = weather.get("wave_period")
+        wave_s = f"{wave:.1f} m" if wave is not None else "-"
+        period_s = f"주기 {period:.0f}초" if period else ""
+        render_stat_row([
+            ("하늘", weather.get("sky", "-"), ""),
+            ("기온", temp_s, ""),
+            ("강수", f"{rain:.1f} mm", ""),
+            ("풍속", wind_s, ""),
+            ("파고(예보)", wave_s, period_s),
+        ], accent="#6a1b9a")
+        st.caption(f"Open-Meteo · {region} ({lat:.2f}, {lon:.2f})")
     else:
-        st.caption("가까운 파랑 관측소 없음")
+        msg = weather.get("msg") or "날씨 정보를 불러오지 못했어요."
+        if weather.get("out_of_range"):
+            st.info(f"ℹ️ {msg}")
+        else:
+            st.warning(f"날씨: {msg}")
+    st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -1191,32 +1200,3 @@ if st.session_state.get("selected_day"):
         else:
             st.info("버튼을 누르면 'N월 어종 조행기' 검색을 반영한 실전 조언을 생성합니다.")
 
-    st.divider()
-    st.markdown("### 🌤️ 해당일 날씨 / 해상 정보")
-    lat, lon = REGION_COORDS.get(region, (37.5, 127.0))
-    weather = fetch_weather(lat, lon, date_str)
-    if weather.get("ok"):
-        tmax, tmin = weather.get("tmax"), weather.get("tmin")
-        rain = weather.get("rain") or 0
-        wind = weather.get("wind")
-        temp_s = f"{tmin:.0f}~{tmax:.0f}°C" if tmax is not None and tmin is not None else "-"
-        wind_s = f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})" if wind is not None else "-"
-        wave = weather.get("wave")
-        period = weather.get("wave_period")
-        wave_s = f"{wave:.1f} m" if wave is not None else "-"
-        period_s = f"주기 {period:.0f}초" if period else ""
-        render_stat_row([
-            ("하늘", weather.get("sky", "-"), ""),
-            ("기온", temp_s, ""),
-            ("강수", f"{rain:.1f} mm", ""),
-            ("풍속", wind_s, ""),
-            ("파고(예보)", wave_s, period_s),
-        ], accent="#6a1b9a")
-        st.caption(f"Open-Meteo · {region} ({lat:.2f}, {lon:.2f})")
-    else:
-        msg = weather.get("msg") or "날씨 정보를 불러오지 못했어요."
-        if weather.get("out_of_range"):
-            st.info(f"ℹ️ {msg}")
-        else:
-            st.warning(f"날씨: {msg}")
-    st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
