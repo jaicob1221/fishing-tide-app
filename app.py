@@ -1064,28 +1064,25 @@ for week in month_days:
             d = date(year, month, day)
             wd = weekday_names[d.weekday()]
             is_selected = selected_day == day
-            # 물때 색 → 날짜 블록 자체에 적용 (별도 색 블록 없음)
             color = {"사리": "#e85d4c", "중간": "#43a047", "조금": "#1e88e5"}.get(mul_type, "#9e9e9e")
             bg = {"사리": "#fdecea", "중간": "#e8f5e9", "조금": "#e3f2fd"}.get(mul_type, "#f5f5f5")
             mark = "▶ " if is_selected else ""
-            label = f"{mark}{day}일({wd})  ·  {mul}  ·  {range_cm}"
-            # 배경·왼쪽 강조선으로 물때 구분 (클릭 영역 = 날짜 버튼 하나)
-            st.markdown(
-                f"""
-                <div style="
-                    background:{bg};
-                    border-left:6px solid {color};
-                    border-radius:10px;
-                    padding:2px 4px 2px 2px;
-                    margin:4px 0 2px 0;
-                    border:1px solid {color}33;
-                    {'box-shadow:0 0 0 2px ' + color + '55;' if is_selected else ''}
-                ">
-                """,
-                unsafe_allow_html=True,
+            label = f"{mark}{day}일({wd}) · {mul} · {range_cm}"
+            # 물때색 = 날짜 블록 배경 (닫힌 HTML 한 덩어리 + 버튼)
+            ring = f"box-shadow:0 0 0 2px {color};" if is_selected else ""
+            card = (
+                f'<div style="background-color:{bg};border-left:6px solid {color};'
+                f'border-radius:10px;padding:10px 12px;margin:6px 0;{ring}">'
+                f'<div style="font-weight:600;color:#222;font-size:0.95rem;">{label}</div>'
+                f"</div>"
             )
-            if st.button(label, key=f"day_{year}_{month}_{day}", use_container_width=True,
-                         type="primary" if is_selected else "secondary"):
+            st.markdown(card, unsafe_allow_html=True)
+            if st.button(
+                f"{day}일 선택",
+                key=f"day_{year}_{month}_{day}",
+                use_container_width=True,
+                type="primary" if is_selected else "secondary",
+            ):
                 st.session_state["selected_day"] = day
                 st.session_state["selected_mul"] = mul
                 st.session_state["selected_mul_type"] = mul_type
@@ -1094,8 +1091,6 @@ for week in month_days:
                 st.session_state.pop("selected_fishes", None)
                 st.session_state.pop("last_advice", None)
                 st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
 
 # ==================== 상세 ====================
 if st.session_state.get("selected_day"):
