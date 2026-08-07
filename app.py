@@ -36,6 +36,149 @@ REGION_COORDS = {
     "제주": (33.4996, 126.5312),
 }
 
+# ==================== 국립해양조사원 관측소 코드 ====================
+# 조위관측소 (surveyTideLevel)
+TIDE_STATIONS = {
+    "인천": "DT_0001",
+    "평택": "DT_0002",
+    "보령": "DT_0024",   # 인근 장항
+    "군산": "DT_0024",   # 인근 장항
+    "목포": "DT_0007",
+    "속초": "DT_0012",
+    "강릉": "DT_0012",   # 인근 속초
+    "울진": "DT_0012",
+    "포항": "DT_0005",   # 인근 부산
+    "울산": "DT_0005",
+    "통영": "DT_0014",
+    "거제": "DT_0014",
+    "여수": "DT_0016",
+    "완도": "DT_0028",   # 인근 진도
+    "제주": "DT_0004",
+}
+
+# 파랑 관측소 (noonWave) - 해역 대표 지점
+WAVE_STATIONS = {
+    "인천": "KG_0024",
+    "평택": "KG_0024",
+    "보령": "KG_0024",
+    "군산": "KG_0024",
+    "목포": "KG_0024",
+    "속초": "KG_0024",
+    "강릉": "KG_0024",
+    "울진": "KG_0024",
+    "포항": "KG_0024",
+    "울산": "KG_0024",
+    "통영": "KG_0024",
+    "거제": "KG_0024",
+    "여수": "KG_0024",
+    "완도": "KG_0024",
+    "제주": "KG_0024",
+}
+
+
+def get_data_go_kr_key():
+    try:
+        return st.secrets.get("DATA_GO_KR_SERVICE_KEY", "") or st.secrets.get("DATA_GO_KR_KEY", "")
+    except Exception:
+        return ""
+
+
+@st.cache_data(ttl=900)
+def fetch_khoa_tide(obs_code: str, yyyymmdd: str, key: str) -> dict:
+    """국립해양조사원 조위관측소 실측·예측 조위"""
+    if not key or not obs_code:
+        return {"ok": False, "msg": "조위 API 키가 없습니다. secrets에 DATA_GO_KR_SERVICE_KEY를 넣으세요."}
+    try:
+        url = "https://apis.data.go.kr/1192136/surveyTideLevel/GetSurveyTideLevelApiService"
+        params = {
+            "serviceKey": key,
+            "type": "json",
+            "obsCode": obs_code,
+            "reqDate": yyyymmdd,
+            "numOfRows": 300,
+            "pageNo": 1,
+            "min": 10,  # 10분 간격
+        }
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        header = data.get("header") or {}
+        if str(header.get("resultCode")) not in ("00", "0"):
+            return {"ok": False, "msg": header.get("resultMsg", "조위 API 오류")}
+        body = data.get("body") or {}
+        items = (body.get("items") or {}).get("item") or []
+        if isinstance(items, dict):
+            items = [items]
+        if not items:
+            return {"ok": False, "msg": "해당일 조위 데이터 없음"}
+
+        # 실측(tdlvHgt) 기준 최고/최저 → 만조/간조 근사
+        valid = [it for it in items if it.get("tdlvHgt") is not None]
+        if not valid:
+            valid = items
+        hi = max(valid, key=lambda x: float(x.get("tdlvHgt") or x.get("bscTdlvHgt") or 0))
+        lo = min(valid, key=lambda x: float(x.get("tdlvHgt") or x.get("bscTdlvHgt") or 0))
+        hi_v = float(hi.get("tdlvHgt") or hi.get("bscTdlvHgt") or 0)
+        lo_v = float(lo.get("tdlvHgt") or lo.get("bscTdlvHgt") or 0)
+        # 최근 값
+        last = valid[-1]
+        last_v = float(last.get("tdlvHgt") or last.get("bscTdlvHgt") or 0)
+        return {
+            "ok": True,
+            "station": hi.get("obsvtrNm", obs_code),
+            "high_time": str(hi.get("obsrvnDt", ""))[-5:] if hi.get("obsrvnDt") else "-",
+            "high_cm": round(hi_v, 1),
+            "low_time": str(lo.get("obsrvnDt", ""))[-5:] if lo.get("obsrvnDt") else "-",
+            "low_cm": round(lo_v, 1),
+            "range_cm": round(hi_v - lo_v, 1),
+            "last_cm": round(last_v, 1),
+            "last_time": str(last.get("obsrvnDt", "")),
+            "count": len(valid),
+        }
+    except Exception as e:
+        return {"ok": False, "msg": f"{type(e).__name__}: {e}"}
+
+
+@st.cache_data(ttl=900)
+def fetch_khoa_wave(obs_code: str, key: str) -> dict:
+    """국립해양조사원 국가해양관측망 실측 파랑"""
+    if not key or not obs_code:
+        return {"ok": False, "msg": "파랑 API 키가 없습니다. secrets에 DATA_GO_KR_SERVICE_KEY를 넣으세요."}
+    try:
+        url = "https://apis.data.go.kr/1192136/noonWave/GetNoonWaveApiService"
+        params = {
+            "serviceKey": key,
+            "type": "json",
+            "obsCode": obs_code,
+            "numOfRows": 12,
+            "pageNo": 1,
+        }
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        header = data.get("header") or {}
+        if str(header.get("resultCode")) not in ("00", "0"):
+            return {"ok": False, "msg": header.get("resultMsg", "파랑 API 오류")}
+        body = data.get("body") or {}
+        items = (body.get("items") or {}).get("item") or []
+        if isinstance(items, dict):
+            items = [items]
+        if not items:
+            return {"ok": False, "msg": "파랑 데이터 없음"}
+        last = items[-1]
+        return {
+            "ok": True,
+            "station": last.get("obsvtrNm", obs_code),
+            "time": last.get("obsrvnDt", ""),
+            "wvhgt": last.get("wvhgt"),
+            "max_wvhgt": last.get("maxWvhgt"),
+            "wvpd": last.get("wvpd"),
+            "wvdrct": last.get("wvdrct"),
+        }
+    except Exception as e:
+        return {"ok": False, "msg": f"{type(e).__name__}: {e}"}
+
+
 # ==================== secrets / OpenAI ====================
 def get_openai_client():
     try:
@@ -143,7 +286,7 @@ def get_tidal_range_cm(mul_type: str, sea: str) -> str:
         "조금": {"서해": (80, 180), "동해": (10, 30), "남해": (40, 100)},
     }
     low, high = base.get(mul_type, {}).get(sea, (50, 150))
-    return f"약 {low}~{high} cm"
+    return f"{low}~{high} cm"
 
 
 def estimate_tide_times(mul_type: str) -> dict:
@@ -242,35 +385,37 @@ def get_llm_advice(client, date_str: str, region: str, sea: str, mul: str, fishe
         return "⚠️ secrets에 OpenAI API Key를 설정하면 AI 낚시조언을 받을 수 있어요."
     try:
         prompt = f"""
-당신은 한국 바다 선상낚시 실전 경력 20년 이상의 전문 가이드다.
-초보용이 아니라, 중급~고급 조사도 바로 현장에 적용할 수 있는 수준의 디테일로 반말 톤으로 조언해라.
+당신은 한국 바다 **선상낚시(보트/선박 출조)** 실전 경력 20년 이상의 전문 가이드다.
+절대 갯바위·방파제·워킹·도보 낚시 내용은 넣지 마라. 전부 선상(배 위) 기준으로만 조언한다.
+중급~고급 조사도 바로 선내에서 적용할 수 있는 수준의 디테일로 반말 톤으로 작성한다.
 
 [조건]
 - 날짜: {date_str}
 - 지역: {region} ({sea})
 - 물때: {mul}
 - 대상 어종: {', '.join(fishes)}
+- 낚시 형태: 선상낚시 전용
 
 아래 구조를 지켜 작성하되, 각 항목을 구체적으로 써라. (총 800~1200자 수준)
 
-1) 물때·조류 해석
+1) 물때·조류 해석 (선상 기준)
 - 이 물때의 조류 세기·방향 변화 타이밍
-- 만조/간조 전후 몇 시간이 핵심인지, 왜 그런지
+- 만조/간조 전후 몇 시간이 핵심인지, 배가 어느 쪽으로 붙는지
 
-2) 어종별 실전 공략 (어종마다 구분)
-- 추천 채비 (바늘 호수, 목줄 길이·호수, 봉돌, 케미/야광 여부 등)
-- 미끼·집어제 운용
-- 포인트 유형 (수심대, 지형: 골, 턱, 암초, 조류받이 등)
-- 액션·템포 (고패질 간격, 슬랙 관리, 입질 패턴)
+2) 어종별 선상 실전 공략 (어종마다 구분)
+- 추천 채비 (바늘 호수, 목줄 길이·호수, 봉돌 무게, 카드채비/외바늘/다운샷 등)
+- 미끼·집어제 운용 (배에서 하는 방식)
+- 포인트 (수심대, 골·턱·암초·조류받이, 배가 붙는 위치)
+- 액션·템포 (고패질 간격, 슬랙 관리, 입질 패턴, 드랍/리프팅)
 
-3) 시간대별 대응
-- 새벽 / 오전 / 오후 / 해질녘 각각 어디를 어떻게 노릴지
+3) 시간대별 선상 대응
+- 출항~오전까지 / 정오 전후 / 오후~철수 각각 수심·채비·포인트 전환
 
-4) 현장 변수 대응
-- 바람·파고·탁도 변화에 따른 채비·포인트 전환
-- 입질이 없을 때 우선 바꿔볼 순서
+4) 현장 변수 대응 (선내)
+- 바람·파고·탁도에 따른 채비·앵커/드리프트 전략
+- 입질 없을 때 우선 바꿔볼 순서 (수심→채비→미끼→포인트)
 
-추상적인 말 대신 숫자·호수·시간·수심을 최대한 넣어라.
+갯바위·캐스팅·도보 포인트 언급 금지. 숫자·호수·수심·시간 위주로 구체적으로.
 """
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -449,15 +594,41 @@ if st.session_state.get("selected_day"):
     tide_est = estimate_tide_times(mul_type)
     c1, c2, c3 = st.columns(3)
     c1.metric("물때", f"{mul} ({mul_type})")
-    c2.metric("고저차(조차)", range_cm)
+    c2.metric("고저차(추정)", range_cm)
     note = tide_est["비고"].split("—")[-1].strip() if "—" in tide_est["비고"] else tide_est["비고"]
     c3.metric("조류 경향", note)
 
-    st.markdown(
-        f"**추정 만조**: {', '.join(tide_est['만조'])} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"**추정 간조**: {', '.join(tide_est['간조'])}"
-    )
-    st.caption("※ 만조·간조 시각은 물때 유형 기반 추정값입니다. 정확한 값은 국립해양조사원 조위 API 연동 시 대체됩니다.")
+    # ---- 국립해양조사원 실측·예측 조위 ----
+    st.markdown("#### 🌊 국립해양조사원 조위 정보")
+    ymd = date_str.replace("-", "")
+    tide_code = TIDE_STATIONS.get(region, "")
+    khoa_tide = fetch_khoa_tide(tide_code, ymd, get_data_go_kr_key()) if tide_code else {"ok": False, "msg": "관측소 미매핑"}
+    if khoa_tide.get("ok"):
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("관측소", khoa_tide["station"])
+        t2.metric("최고조위(근사 만조)", f"{khoa_tide['high_cm']} cm", delta=khoa_tide.get("high_time"))
+        t3.metric("최저조위(근사 간조)", f"{khoa_tide['low_cm']} cm", delta=khoa_tide.get("low_time"))
+        t4.metric("조차(실측 범위)", f"{khoa_tide['range_cm']} cm")
+        st.caption(f"최근 조위 {khoa_tide['last_cm']} cm · {khoa_tide['last_time']} · 자료 {khoa_tide['count']}건 (10분 간격)")
+    else:
+        st.info(f"조위 API: {khoa_tide.get('msg', '조회 실패')} — 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
+
+    # ---- 국립해양조사원 실측 파랑 ----
+    st.markdown("#### 🌊 국립해양조사원 파랑 정보")
+    wave_code = WAVE_STATIONS.get(region, "KG_0024")
+    khoa_wave = fetch_khoa_wave(wave_code, get_data_go_kr_key())
+    if khoa_wave.get("ok"):
+        w1, w2, w3, w4 = st.columns(4)
+        w1.metric("관측소", khoa_wave["station"])
+        wh = khoa_wave.get("wvhgt")
+        w2.metric("유의파고", f"{wh} m" if wh is not None else "-")
+        mwh = khoa_wave.get("max_wvhgt")
+        w3.metric("최대파고", f"{mwh} m" if mwh is not None else "-")
+        pd_ = khoa_wave.get("wvpd")
+        w4.metric("파주기", f"{pd_} 초" if pd_ is not None else "-")
+        st.caption(f"관측시각: {khoa_wave.get('time', '-')}")
+    else:
+        st.info(f"파랑 API: {khoa_wave.get('msg', '조회 실패')}")
 
     col1, col2 = st.columns([1, 2])
 
