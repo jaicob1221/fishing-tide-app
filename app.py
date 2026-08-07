@@ -416,56 +416,129 @@ def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str
         return [f.strip() for f in seasonal_ref.split(",")][:3]
 
 
-def get_llm_advice(client, date_str: str, region: str, sea: str, mul: str, fishes: list) -> str:
+def fetch_johwang_snippets(region: str, sea: str, fishes: list, month: int) -> str:
+    """웹 검색으로 선상 조황·공략 관련 글 제목/요약을 수집"""
+    import re
+    snippets = []
+    queries = []
+    for fish in (fishes or ["광어"])[:2]:
+        queries.append(f"{region} {fish} 선상 조황 {month}월")
+        queries.append(f"{sea} {fish} 선상낚시 채비 공략")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; FishingTideApp/1.0)"}
+    for q in queries[:3]:
+        try:
+            r = requests.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": q},
+                headers=headers,
+                timeout=8,
+            )
+            if r.status_code != 200:
+                continue
+            html = r.text
+            titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.S)
+            bodies = re.findall(r'class="result__snippet"[^>]*>(.*?)</', html, re.S)
+            for i, t in enumerate(titles[:4]):
+                t_clean = re.sub(r"<[^>]+>", "", t).strip()
+                b_clean = ""
+                if i < len(bodies):
+                    b_clean = re.sub(r"<[^>]+>", "", bodies[i]).strip()
+                if t_clean:
+                    line = f"- {t_clean}"
+                    if b_clean:
+                        line += f": {b_clean[:120]}"
+                    snippets.append(line)
+        except Exception:
+            continue
+    if not snippets:
+        return "(웹 검색 결과를 가져오지 못함 — 시즌·지역 일반 조황 경향으로 보완)"
+    uniq, seen = [], set()
+    for s in snippets:
+        k = s[:40]
+        if k not in seen:
+            seen.add(k)
+            uniq.append(s)
+    return "\n".join(uniq[:10])
+
+
+def get_llm_advice(client, date_str: str, region: str, sea: str, mul: str, fishes: list, month: int = None) -> str:
     if client is None:
         return "⚠️ secrets에 OpenAI API Key를 설정하면 AI 낚시조언을 받을 수 있어요."
     try:
-        prompt = f"""
-당신은 한국 바다 **선상낚시(보트/선박 출조)** 실전 경력 20년 이상의 전문 가이드다.
-절대 갯바위·방파제·워킹·도보 낚시 내용은 넣지 마라. 전부 선상(배 위) 기준으로만 조언한다.
-중급~고급 조사도 바로 선내에서 적용할 수 있는 수준의 디테일로 반말 톤으로 작성한다.
+        if month is None:
+            try:
+                month = int(date_str.split("-")[1])
+            except Exception:
+                month = date.today().month
 
-[조건]
+        with st.spinner("조황·공략 관련 글을 수집하는 중..."):
+            web_refs = fetch_johwang_snippets(region, sea, fishes, month)
+
+        seasonal = get_seasonal_reference(sea, month)
+
+        prompt = f"""
+너는 'AI 조황 분석가'다. 일반적인 AI 잔소리가 아니라,
+한국 웹의 선상낚시 조황글·블로그·카페 공략글에서 반복되는 내용을 바탕으로
+현장감 있게 요약·분석해서 반말로 전달한다.
+
+[출조 조건]
 - 날짜: {date_str}
 - 지역: {region} ({sea})
 - 물때: {mul}
 - 대상 어종: {', '.join(fishes)}
-- 낚시 형태: 선상낚시 전용
+- 형태: 선상낚시만 (갯바위·방파제·워킹 금지)
 
-아래 구조를 지켜 작성하되, 각 항목을 구체적으로 써라. (총 800~1200자 수준)
+[시즌 참고]
+{seasonal}
 
-1) 물때·조류 해석 (선상 기준)
-- 이 물때의 조류 세기·방향 변화 타이밍
-- 만조/간조 전후 몇 시간이 핵심인지, 배가 어느 쪽으로 붙는지
+[웹에서 수집한 관련 글 제목/요약]
+{web_refs}
 
-2) 어종별 선상 실전 공략 (어종마다 구분)
-- 추천 채비 (바늘 호수, 목줄 길이·호수, 봉돌 무게, 카드채비/외바늘/다운샷 등)
-- 미끼·집어제 운용 (배에서 하는 방식)
-- 포인트 (수심대, 골·턱·암초·조류받이, 배가 붙는 위치)
-- 액션·템포 (고패질 간격, 슬랙 관리, 입질 패턴, 드랍/리프팅)
+작성 규칙:
+1) 위 웹 자료와 시즌 경향을 우선 반영. 자료가 빈약하면 그 시즌 그 해역 선상에서 흔히 통하는 공략만 사용.
+2) "AI가 추천합니다" 같은 추상 표현 금지. 조황글 말투처럼 구체적으로.
+3) 반드시 선상(배) 기준만.
+4) 800~1300자, 아래 구조:
 
-3) 시간대별 선상 대응
-- 출항~오전까지 / 정오 전후 / 오후~철수 각각 수심·채비·포인트 전환
+### 조황 요약
+- 이 시기·지역·어종 글들에서 공통으로 말하는 분위기 2~4줄
 
-4) 현장 변수 대응 (선내)
-- 바람·파고·탁도에 따른 채비·앵커/드리프트 전략
-- 입질 없을 때 우선 바꿔볼 순서 (수심→채비→미끼→포인트)
+### 선상 공략 포인트 (어종별)
+- 채비(호수·목줄·봉돌·채비 종류)
+- 수심·포인트(골/턱/조류받이 등)
+- 미끼·액션·입질 패턴
+- 자주 언급되는 시간대
 
-갯바위·캐스팅·도보 포인트 언급 금지. 숫자·호수·수심·시간 위주로 구체적으로.
+### 물때·조류 활용
+- 이 물때 배 붙이는 타이밍, 만조/간조 전후
+
+### 현장에서 바로 쓸 체크
+- 입질 없을 때 바꿀 순서 3가지
+- 바람·파고 있을 때 주의
+
+숫자·호수·수심을 넣되, 웹에 없는 과도한 단정은 "조황글에서 자주 나오는 편" 정도로 완화.
 """
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "한국 바다 선상낚시 실전 전문가. 고급 조사 수준의 구체적 조언을 반말로 제공한다."},
+                {
+                    "role": "system",
+                    "content": "한국 선상낚시 조황·공략글을 요약 분석하는 전문가. 일반론 AI 답변 금지. 현장 조황글 톤으로 반말 작성.",
+                },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=1200,
-            temperature=0.65,
-            timeout=45,
+            max_tokens=1400,
+            temperature=0.55,
+            timeout=60,
         )
-        return response.choices[0].message.content
+        body = response.choices[0].message.content
+        return (
+            body
+            + "\n\n---\n*참고: 웹 조황·공략 글 검색 결과를 바탕으로 요약 분석한 내용이며, 당일 현장과 다를 수 있습니다.*"
+        )
     except Exception as e:
         return f"⚠️ LLM 오류: {type(e).__name__}: {e}"
+
 
 
 # ==================== 날씨 (Open-Meteo, 키 불필요) ====================
@@ -556,6 +629,33 @@ def wind_dir_text(deg) -> str:
 
 
 # ==================== 선상24 링크 ====================
+
+def render_stat_row(items, accent="#1e88e5"):
+    """작은 카드 통계 행. items: [(라벨, 값, 보조), ...]"""
+    cells = []
+    for label, value, sub in items:
+        sub_html = (
+            f'<div style="font-size:11px;color:#888;margin-top:2px;">{sub}</div>'
+            if sub else ""
+        )
+        cells.append(
+            '<div style="flex:1;min-width:90px;'
+            'background:linear-gradient(145deg,#fafbfc,#ffffff);'
+            'border:1px solid #e0e0e0;border-left:3px solid ' + accent + ';'
+            'border-radius:8px;padding:8px 10px;'
+            'box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+            f'<div style="font-size:11px;color:#666;margin-bottom:2px;">{label}</div>'
+            f'<div style="font-size:14px;font-weight:600;color:#222;line-height:1.3;">{value}</div>'
+            f'{sub_html}</div>'
+        )
+    html = (
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px 0;">'
+        + "".join(cells)
+        + "</div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def sunsang24_link(region: str, fish: str = "") -> str:
     """선상24는 공개 검색 API가 없어 메인으로 연결."""
     return "https://www.sunsang24.com/"
@@ -636,53 +736,50 @@ if st.session_state.get("selected_day"):
     st.subheader(f"📌 {date_str} 상세 정보")
 
     tide_est = estimate_tide_times(mul_type)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("물때", f"{mul} ({mul_type})")
-    c2.metric("고저차(추정)", range_cm)
     note = tide_est["비고"].split("—")[-1].strip() if "—" in tide_est["비고"] else tide_est["비고"]
-    c3.metric("조류 경향", note)
+    render_stat_row([
+        ("물때", f"{mul} ({mul_type})", ""),
+        ("고저차(추정)", range_cm, ""),
+        ("조류 경향", note, ""),
+    ], accent="#546e7a")
 
-    # ---- 국립해양조사원 실측·예측 조위 ----
-    st.markdown("#### 🌊 국립해양조사원 조위 정보")
+    st.markdown("##### 🌊 국립해양조사원 조위")
     ymd = date_str.replace("-", "")
     tide_code = TIDE_STATIONS.get(region, "")
     khoa_tide = fetch_khoa_tide(tide_code, ymd, get_data_go_kr_key()) if tide_code else {"ok": False, "msg": "관측소 미매핑"}
     if khoa_tide.get("ok"):
-        t1, t2, t3, t4 = st.columns(4)
-        t1.metric("관측소", khoa_tide["station"])
-        t2.metric("최고조위(근사 만조)", f"{khoa_tide['high_cm']} cm", delta=khoa_tide.get("high_time"))
-        t3.metric("최저조위(근사 간조)", f"{khoa_tide['low_cm']} cm", delta=khoa_tide.get("low_time"))
-        t4.metric("조차(실측 범위)", f"{khoa_tide['range_cm']} cm")
-        st.caption(f"최근 조위 {khoa_tide['last_cm']} cm · {khoa_tide['last_time']} · 자료 {khoa_tide['count']}건 (10분 간격)")
+        render_stat_row([
+            ("관측소", khoa_tide["station"], ""),
+            ("최고조위", f"{khoa_tide['high_cm']} cm", khoa_tide.get("high_time", "")),
+            ("최저조위", f"{khoa_tide['low_cm']} cm", khoa_tide.get("low_time", "")),
+            ("조차", f"{khoa_tide['range_cm']} cm", ""),
+        ], accent="#0277bd")
+        st.caption(f"최근 {khoa_tide['last_cm']} cm · {khoa_tide['last_time']} · {khoa_tide['count']}건(10분)")
     else:
-        st.info(f"조위 API: {khoa_tide.get('msg', '조회 실패')} — 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
+        st.caption(f"조위 API: {khoa_tide.get('msg', '조회 실패')} · 추정 만조 {', '.join(tide_est['만조'])} / 간조 {', '.join(tide_est['간조'])}")
 
-    # ---- 국립해양조사원 실측 파랑 (가장 가까운 관측소) ----
-    st.markdown("#### 🌊 국립해양조사원 파랑 정보")
+    st.markdown("##### 🌊 국립해양조사원 파랑")
     rlat, rlon = REGION_COORDS.get(region, (37.5, 127.0))
     nearest = nearest_wave_station(rlat, rlon)
     if nearest:
         wave_code, wave_name, dist_km = nearest
         khoa_wave = fetch_khoa_wave(wave_code, get_data_go_kr_key())
         if khoa_wave.get("ok"):
-            w1, w2, w3, w4 = st.columns(4)
-            w1.metric("관측소", f"{khoa_wave['station']}")
             wh = khoa_wave.get("wvhgt")
-            w2.metric("유의파고", f"{wh} m" if wh is not None else "-")
             mwh = khoa_wave.get("max_wvhgt")
-            w3.metric("최대파고", f"{mwh} m" if mwh is not None else "-")
             pd_ = khoa_wave.get("wvpd")
-            w4.metric("파주기", f"{pd_} 초" if pd_ is not None else "-")
-            st.caption(
-                f"관측시각: {khoa_wave.get('time', '-')} · "
-                f"{region}에서 약 {dist_km:.0f} km 거리의 최근접 파랑 관측소"
-            )
+            render_stat_row([
+                ("관측소", str(khoa_wave.get("station", wave_name)), f"{region}에서 약 {dist_km:.0f} km"),
+                ("유의파고", f"{wh} m" if wh is not None else "-", ""),
+                ("최대파고", f"{mwh} m" if mwh is not None else "-", ""),
+                ("파주기", f"{pd_} 초" if pd_ is not None else "-", str(khoa_wave.get("time", "") or "")),
+            ], accent="#00838f")
             if dist_km > 150:
-                st.caption("⚠️ 선택한 지역과 관측소 거리가 멉니다. 아래 Open-Meteo 파고를 함께 참고하세요.")
+                st.caption("⚠️ 관측소가 멀어 아래 Open-Meteo 파고를 함께 참고하세요.")
         else:
-            st.info(f"파랑 API: {khoa_wave.get('msg', '조회 실패')}")
+            st.caption(f"파랑 API: {khoa_wave.get('msg', '조회 실패')}")
     else:
-        st.info("가까운 파랑 관측소를 찾지 못했습니다.")
+        st.caption("가까운 파랑 관측소를 찾지 못했습니다.")
 
     col1, col2 = st.columns([1, 2])
 
@@ -736,7 +833,7 @@ if st.session_state.get("selected_day"):
         if st.button("AI 상세 조언 받기", type="primary"):
             with st.spinner("조언 생성 중..."):
                 st.session_state["last_advice"] = get_llm_advice(
-                    client, date_str, region, sea_area, mul, fishes
+                    client, date_str, region, sea_area, mul, fishes, month
                 )
         if "last_advice" in st.session_state:
             st.markdown(st.session_state["last_advice"])
@@ -751,24 +848,26 @@ if st.session_state.get("selected_day"):
     weather = fetch_weather(lat, lon, date_str)
 
     if weather.get("ok"):
-        w1, w2, w3, w4 = st.columns(4)
-        w1.metric("하늘", weather.get("sky", "-"))
         tmax, tmin = weather.get("tmax"), weather.get("tmin")
-        w2.metric("기온", f"{tmin:.0f}~{tmax:.0f}°C" if tmax is not None and tmin is not None else "-")
         rain = weather.get("rain") or 0
-        w3.metric("강수", f"{rain:.1f} mm")
         wind = weather.get("wind")
-        w4.metric(
-            "최대풍속",
-            f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})" if wind is not None else "-",
+        temp_s = f"{tmin:.0f}~{tmax:.0f}°C" if tmax is not None and tmin is not None else "-"
+        wind_s = (
+            f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})"
+            if wind is not None else "-"
         )
-
         wave = weather.get("wave")
-        if wave is not None:
-            period = weather.get("wave_period")
-            extra = f" / 주기 {period:.0f}초" if period else ""
-            st.markdown(f"**파고(최대)**: 약 **{wave:.1f} m**{extra}")
-        st.caption(f"출처: Open-Meteo · 기준 좌표 {region} ({lat:.2f}, {lon:.2f})")
+        period = weather.get("wave_period")
+        wave_s = f"{wave:.1f} m" if wave is not None else "-"
+        period_s = f"주기 {period:.0f}초" if period else ""
+        render_stat_row([
+            ("하늘", weather.get("sky", "-"), ""),
+            ("기온", temp_s, ""),
+            ("강수", f"{rain:.1f} mm", ""),
+            ("풍속", wind_s, ""),
+            ("파고(예보)", wave_s, period_s),
+        ], accent="#6a1b9a")
+        st.caption(f"Open-Meteo · {region} ({lat:.2f}, {lon:.2f})")
     else:
         msg = weather.get("msg") or "날씨 정보를 불러오지 못했어요."
         if weather.get("out_of_range"):
