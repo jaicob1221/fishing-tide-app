@@ -449,26 +449,39 @@ def get_windy_api_key() -> str:
 
 
 def render_windy_map(lat: float, lon: float, region: str, height: int = 420):
-    """Windy 해상 지도
-    Streamlit(localhost / *.streamlit.app)은 Map Forecast 키 도메인 제한에 걸리기 쉬워
-    → 공개 embed 사용 (키·도메인 불필요, 바람/파고 레이어 동일하게 표시)
-    """
-    # overlay: wind | waves | rain | temp 등
-    embed = (
-        f"https://embed.windy.com/embed2.html?"
-        f"lat={lat}&lon={lon}&detailLat={lat}&detailLon={lon}"
-        f"&zoom=8&level=surface&overlay=wind&menu=&message=true"
-        f"&marker=true&calendar=now&pressure=&type=map&location=coordinates"
-        f"&detail=true&metricWind=m/s&metricTemp=°C&radarRange=-1"
-    )
-    st.components.v1.iframe(embed, height=height, scrolling=False)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.caption(f"Windy embed · {region} ({lat:.2f}, {lon:.2f})")
-    with c2:
-        st.markdown(f"[전체 화면에서 열기](https://www.windy.com/{lat}/{lon})")
-    # Map Forecast 키를 쓰려면 Windy keys 페이지에 도메인 등록 필요:
-    # localhost, 127.0.0.1, *.streamlit.app
+    """Windy 해상 지도 — Map Forecast 키 있으면 공식 맵, 없으면 공개 embed"""
+    key = get_windy_api_key()
+    if key:
+        # Map Forecast: components.html 로 Leaflet 부트스트랩
+        # script 종료 태그는 문자열 분할로 삽입 (파서 이슈 방지)
+        end_script = "<" + "/script>"
+        html = (
+            f'<div id="windy" style="width:100%;height:{height}px;border-radius:12px;overflow:hidden;"></div>'
+            f'<script src="https://unpkg.com/leaflet@1.4.0/dist/leaflet.js">{end_script}'
+            f'<script src="https://api.windy.com/assets/map-forecast/libBoot.js">{end_script}'
+            f"<script>"
+            f"const options={{key:{repr(key)},lat:{lat},lon:{lon},zoom:8,"
+            f'overlay:"wind",level:"surface",detail:true,hourFormat:"24h"}};'
+            f"windyInit(options,function(w){{"
+            f"var map=w.map;"
+            f"L.marker([{lat},{lon}]).addTo(map)"
+            f'.bindPopup({repr(str(region)+" 출조 해역")}).openPopup();'
+            f"}});"
+            f"{end_script}"
+        )
+        st.components.v1.html(html, height=height + 16, scrolling=False)
+        st.caption(f"Windy Map Forecast · {region} ({lat:.2f}, {lon:.2f}) · wind")
+    else:
+        embed = (
+            f"https://embed.windy.com/embed2.html?"
+            f"lat={lat}&lon={lon}&detailLat={lat}&detailLon={lon}"
+            f"&zoom=8&level=surface&overlay=wind&menu=&message=true"
+            f"&marker=true&calendar=now&pressure=&type=map&location=coordinates"
+            f"&detail=true&metricWind=default&metricTemp=default&radarRange=-1"
+        )
+        st.components.v1.iframe(embed, height=height, scrolling=False)
+        st.caption("Windy 공개 embed · WINDY_API_KEY 설정 시 Map Forecast API 사용")
+    st.markdown(f"[🗺️ Windy 전체 화면](https://www.windy.com/{lat}/{lon})")
 
 
 # ==================== 사이드바 ====================
@@ -512,9 +525,9 @@ with st.sidebar:
         st.warning("⚠️ NAVER_CLIENT_ID / SECRET 미설정")
 
     if get_windy_api_key():
-        st.caption("Windy API 키 감지됨 (지도는 embed 사용 · 도메인 제한 회피)")
+        st.success("✅ Windy API 키 로드됨")
     else:
-        st.caption("Windy 지도: 공개 embed 사용 중")
+        st.caption("Windy: secrets에 WINDY_API_KEY 설정 (선택)")
 
     st.info("💡 달력 날짜를 누르면 상세 정보가 나와요!")
 
