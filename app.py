@@ -4,6 +4,7 @@ from korean_lunar_calendar import KoreanLunarCalendar
 from openai import OpenAI
 import calendar as cal
 import os
+from pathlib import Path
 import requests
 import re
 
@@ -448,11 +449,96 @@ def get_windy_api_key() -> str:
     return ""
 
 
+def _ensure_local_static_server(port: int = 8765) -> bool:
+    """앱 폴더를 localhost 로 서빙 (Windy API origin=localhost 용). 한 번만 기동."""
+    if st.session_state.get("_windy_static_ok"):
+        return True
+    import threading
+    from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+
+    app_dir = Path(__file__).resolve().parent
+
+    class _Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(app_dir), **kwargs)
+
+        def log_message(self, format, *args):
+            pass
+
+    try:
+        # 이미 떠 있으면 재사용
+        import urllib.request
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.5)
+        st.session_state["_windy_static_ok"] = True
+        st.session_state["_windy_static_port"] = port
+        return True
+    except Exception:
+        pass
+
+    try:
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        st.session_state["_windy_static_ok"] = True
+        st.session_state["_windy_static_port"] = port
+        return True
+    except OSError:
+        # 포트 사용 중이면 이미 서버일 수 있음
+        try:
+            import urllib.request
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.5)
+            st.session_state["_windy_static_ok"] = True
+            st.session_state["_windy_static_port"] = port
+            return True
+        except Exception:
+            return False
+
+
+def _write_windy_runtime_html(key: str, lat: float, lon: float, region: str, ts_ms) -> Path:
+    """localhost 에서 열릴 HTML 생성 (origin=localhost → Windy API 허용)"""
+    app_dir = Path(__file__).resolve().parent
+    out = app_dir / "windy_runtime.html"
+    ts_line = f"opts.timestamp = {int(ts_ms)};" if ts_ms else ""
+    html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Windy</title>
+<style>html,body,#windy{{margin:0;height:100%;width:100%;background:#0d1b2a}}</style>
+</head>
+<body>
+<div id="windy"></div>
+<script src="https://unpkg.com/leaflet@1.4.0/dist/leaflet.js"></script>
+<script src="https://api.windy.com/assets/map-forecast/libBoot.js"></script>
+<script>
+var opts = {{
+  key: {repr(key)},
+  lat: {lat},
+  lon: {lon},
+  zoom: 8,
+  overlay: "wind",
+  level: "surface",
+  detail: true,
+  hourFormat: "24h"
+}};
+{ts_line}
+windyInit(opts, function(api) {{
+  L.marker([{lat}, {lon}]).addTo(api.map)
+    .bindPopup({repr(str(region) + " 출조 해역")}).openPopup();
+}});
+</script>
+</body>
+</html>
+"""
+    out.write_text(html, encoding="utf-8")
+    return out
+
+
 def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, height: int = 450):
     """Windy 해상 지도
-    - WINDY_API_KEY 있음 → Map Forecast API (로컬 localhost 에서 동작 확인됨)
-    - 키 없음 → 공개 embed
-    Domain: api.windy.com/keys 에서 비우거나 localhost 등록
+    Streamlit components.html 은 origin=null 이라 Windy API 403.
+    → 로컬 static 서버(localhost)로 HTML을 띄운 뒤 iframe (HTML 테스트와 동일 원리)
     """
     key = get_windy_api_key()
 
@@ -470,38 +556,25 @@ def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, 
             pass
 
     if key:
-        end_script = "<" + "/script>"
-        ts_line = f"opts.timestamp = {ts_ms};" if ts_ms else ""
-        html = f"""
-<div id="windy" style="width:100%;height:{height}px;border-radius:12px;overflow:hidden;background:#0d1b2a;"></div>
-<script src="https://unpkg.com/leaflet@1.4.0/dist/leaflet.js">{end_script}
-<script src="https://api.windy.com/assets/map-forecast/libBoot.js">{end_script}
-<script>
-(function() {{
-  var opts = {{
-    key: {repr(key)},
-    lat: {lat},
-    lon: {lon},
-    zoom: 8,
-    overlay: "wind",
-    level: "surface",
-    detail: true,
-    hourFormat: "24h"
-  }};
-  {ts_line}
-  windyInit(opts, function(windyAPI) {{
-    var map = windyAPI.map;
-    L.marker([{lat}, {lon}]).addTo(map)
-      .bindPopup({repr(str(region) + " 출조 해역")}).openPopup();
-  }});
-}})();
-{end_script}
-"""
-        st.components.v1.html(html, height=height + 8, scrolling=False)
-        st.caption(
-            f"Windy Map Forecast API · {region} ({lat:.2f}, {lon:.2f})"
-            + (f" · {date_str}" if date_str else "")
-        )
+        port = 8765
+        ok = _ensure_local_static_server(port)
+        _write_windy_runtime_html(key, lat, lon, region, ts_ms)
+        if ok:
+            # cache-bust so date/region change reloads map
+            bust = date_str or "now"
+            map_url = f"http://127.0.0.1:{port}/windy_runtime.html?v={bust}-{lat}-{lon}"
+            st.components.v1.iframe(map_url, height=height, scrolling=False)
+            st.caption(f"Windy Map Forecast API · localhost:{port} · {region} ({lat:.2f}, {lon:.2f})")
+        else:
+            st.warning(
+                f"로컬 지도 서버(포트 {port})를 시작하지 못했습니다. "
+                "터미널에서 `python -m http.server 8765` 를 앱 폴더에서 실행해 보세요."
+            )
+            st.components.v1.iframe(
+                f"http://127.0.0.1:{port}/windy_runtime.html",
+                height=height,
+                scrolling=False,
+            )
     else:
         embed_url = (
             "https://embed.windy.com/embed2.html?"
@@ -511,10 +584,8 @@ def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, 
             "&pressure=&type=map&location=coordinates&detail=true"
             "&metricWind=m/s&metricTemp=%C2%B0C&radarRange=-1"
         )
-        if date_str:
-            embed_url += f"&_appdate={date_str}"
         st.components.v1.iframe(embed_url, height=height, scrolling=False)
-        st.caption(f"Windy 공개 embed · secrets에 WINDY_API_KEY 설정 시 API 모드")
+        st.caption("Windy 공개 embed · WINDY_API_KEY 설정 시 API 모드")
 
     if time_token:
         st.markdown(
@@ -522,6 +593,8 @@ def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, 
         )
     else:
         st.markdown(f"[🗺️ Windy 전체 화면](https://www.windy.com/{lat}/{lon})")
+
+
 
 
 # ==================== 사이드바 ====================
