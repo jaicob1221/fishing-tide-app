@@ -438,6 +438,52 @@ def get_naver_credentials():
     return "", ""
 
 
+def get_windy_api_key() -> str:
+    try:
+        k = st.secrets.get("WINDY_API_KEY", "") or ""
+        if k and not str(k).startswith("여기에"):
+            return str(k).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def render_windy_map(lat: float, lon: float, region: str, height: int = 420):
+    """Windy 해상 지도 — Map Forecast 키 있으면 공식 맵, 없으면 공개 embed"""
+    key = get_windy_api_key()
+    if key:
+        # Map Forecast: components.html 로 Leaflet 부트스트랩
+        # script 종료 태그는 문자열 분할로 삽입 (파서 이슈 방지)
+        end_script = "<" + "/script>"
+        html = (
+            f'<div id="windy" style="width:100%;height:{height}px;border-radius:12px;overflow:hidden;"></div>'
+            f'<script src="https://unpkg.com/leaflet@1.4.0/dist/leaflet.js">{end_script}'
+            f'<script src="https://api.windy.com/assets/map-forecast/libBoot.js">{end_script}'
+            f"<script>"
+            f"const options={{key:{repr(key)},lat:{lat},lon:{lon},zoom:8,"
+            f'overlay:"wind",level:"surface",detail:true,hourFormat:"24h"}};'
+            f"windyInit(options,function(w){{"
+            f"var map=w.map;"
+            f"L.marker([{lat},{lon}]).addTo(map)"
+            f'.bindPopup({repr(str(region)+" 출조 해역")}).openPopup();'
+            f"}});"
+            f"{end_script}"
+        )
+        st.components.v1.html(html, height=height + 16, scrolling=False)
+        st.caption(f"Windy Map Forecast · {region} ({lat:.2f}, {lon:.2f}) · wind")
+    else:
+        embed = (
+            f"https://embed.windy.com/embed2.html?"
+            f"lat={lat}&lon={lon}&detailLat={lat}&detailLon={lon}"
+            f"&zoom=8&level=surface&overlay=wind&menu=&message=true"
+            f"&marker=true&calendar=now&pressure=&type=map&location=coordinates"
+            f"&detail=true&metricWind=default&metricTemp=default&radarRange=-1"
+        )
+        st.components.v1.iframe(embed, height=height, scrolling=False)
+        st.caption("Windy 공개 embed · WINDY_API_KEY 설정 시 Map Forecast API 사용")
+    st.markdown(f"[🗺️ Windy 전체 화면](https://www.windy.com/{lat}/{lon})")
+
+
 # ==================== 사이드바 ====================
 with st.sidebar:
     st.header("⚙️ 설정")
@@ -477,6 +523,11 @@ with st.sidebar:
         st.success("✅ 네이버 검색 API 키 로드됨")
     else:
         st.warning("⚠️ NAVER_CLIENT_ID / SECRET 미설정")
+
+    if get_windy_api_key():
+        st.success("✅ Windy API 키 로드됨")
+    else:
+        st.caption("Windy: secrets에 WINDY_API_KEY 설정 (선택)")
 
     st.info("💡 달력 날짜를 누르면 상세 정보가 나와요!")
 
@@ -1303,7 +1354,8 @@ if st.session_state.get("selected_day"):
             st.info(f"ℹ️ {msg}")
         else:
             st.warning(f"날씨: {msg}")
-    st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
+    st.markdown("###### 🗺️ 해상 지도 (Windy)")
+    render_windy_map(lat, lon, region, height=400)
 
     st.markdown("##### 🌊 국립해양조사원 조위")
     ymd = date_str.replace("-", "")
