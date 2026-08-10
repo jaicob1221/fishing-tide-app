@@ -449,8 +449,23 @@ def get_windy_api_key() -> str:
     return ""
 
 
+
+def _is_streamlit_cloud() -> bool:
+    """Streamlit Community Cloud 여부"""
+    if Path("/mount/src").exists():
+        return True
+    if os.environ.get("STREAMLIT_SHARING_MODE"):
+        return True
+    host = (os.environ.get("HOSTNAME") or "") + (os.environ.get("SERVER_NAME") or "")
+    if "streamlit" in host.lower():
+        return True
+    return False
+
+
 def _ensure_local_static_server(port: int = 8765) -> bool:
-    """앱 폴더를 localhost 로 서빙 (Windy API origin=localhost 용). 한 번만 기동."""
+    """앱 폴더를 localhost 로 서빙 (로컬 전용). Cloud 에서는 사용 안 함."""
+    if _is_streamlit_cloud():
+        return False
     if st.session_state.get("_windy_static_ok"):
         return True
     import threading
@@ -466,9 +481,8 @@ def _ensure_local_static_server(port: int = 8765) -> bool:
             pass
 
     try:
-        # 이미 떠 있으면 재사용
         import urllib.request
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.5)
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.4)
         st.session_state["_windy_static_ok"] = True
         st.session_state["_windy_static_port"] = port
         return True
@@ -483,10 +497,9 @@ def _ensure_local_static_server(port: int = 8765) -> bool:
         st.session_state["_windy_static_port"] = port
         return True
     except OSError:
-        # 포트 사용 중이면 이미 서버일 수 있음
         try:
             import urllib.request
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.5)
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.4)
             st.session_state["_windy_static_ok"] = True
             st.session_state["_windy_static_port"] = port
             return True
@@ -495,7 +508,6 @@ def _ensure_local_static_server(port: int = 8765) -> bool:
 
 
 def _write_windy_runtime_html(key: str, lat: float, lon: float, region: str, ts_ms) -> Path:
-    """localhost 에서 열릴 HTML 생성 (origin=localhost → Windy API 허용)"""
     app_dir = Path(__file__).resolve().parent
     out = app_dir / "windy_runtime.html"
     ts_line = f"opts.timestamp = {int(ts_ms)};" if ts_ms else ""
@@ -535,12 +547,28 @@ windyInit(opts, function(api) {{
     return out
 
 
+def _render_windy_embed(lat, lon, region, date_str, height):
+    embed_url = (
+        "https://embed.windy.com/embed2.html?"
+        f"lat={lat}&lon={lon}&detailLat={lat}&detailLon={lon}"
+        "&zoom=8&level=surface&overlay=wind"
+        "&menu=&message=true&marker=true&calendar=now"
+        "&pressure=&type=map&location=coordinates&detail=true"
+        "&metricWind=m/s&metricTemp=%C2%B0C&radarRange=-1"
+    )
+    if date_str:
+        embed_url += f"&_appdate={date_str}"
+    st.components.v1.iframe(embed_url, height=height, scrolling=False)
+    st.caption(f"Windy 공개 embed · {region} ({lat:.2f}, {lon:.2f})")
+
+
 def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, height: int = 450):
-    """Windy 해상 지도
-    Streamlit components.html 은 origin=null 이라 Windy API 403.
-    → 로컬 static 서버(localhost)로 HTML을 띄운 뒤 iframe (HTML 테스트와 동일 원리)
+    """Windy 지도
+    - 로컬 + API 키 → localhost iframe (Map Forecast API)
+    - Cloud / 키 없음 → 공개 embed
     """
     key = get_windy_api_key()
+    on_cloud = _is_streamlit_cloud()
 
     time_token = None
     ts_ms = None
@@ -555,37 +583,23 @@ def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, 
         except Exception:
             pass
 
-    if key:
+    # Cloud 에서는 localhost iframe 불가 → embed
+    if key and not on_cloud:
         port = 8765
         ok = _ensure_local_static_server(port)
         _write_windy_runtime_html(key, lat, lon, region, ts_ms)
         if ok:
-            # cache-bust so date/region change reloads map
             bust = date_str or "now"
             map_url = f"http://127.0.0.1:{port}/windy_runtime.html?v={bust}-{lat}-{lon}"
             st.components.v1.iframe(map_url, height=height, scrolling=False)
-            st.caption(f"Windy Map Forecast API · localhost:{port} · {region} ({lat:.2f}, {lon:.2f})")
+            st.caption(f"Windy Map Forecast API · localhost:{port} · {region}")
         else:
-            st.warning(
-                f"로컬 지도 서버(포트 {port})를 시작하지 못했습니다. "
-                "터미널에서 `python -m http.server 8765` 를 앱 폴더에서 실행해 보세요."
-            )
-            st.components.v1.iframe(
-                f"http://127.0.0.1:{port}/windy_runtime.html",
-                height=height,
-                scrolling=False,
-            )
+            st.info("로컬 지도 서버를 쓰지 못해 공개 embed로 표시합니다.")
+            _render_windy_embed(lat, lon, region, date_str, height)
     else:
-        embed_url = (
-            "https://embed.windy.com/embed2.html?"
-            f"lat={lat}&lon={lon}&detailLat={lat}&detailLon={lon}"
-            "&zoom=8&level=surface&overlay=wind"
-            "&menu=&message=true&marker=true&calendar=now"
-            "&pressure=&type=map&location=coordinates&detail=true"
-            "&metricWind=m/s&metricTemp=%C2%B0C&radarRange=-1"
-        )
-        st.components.v1.iframe(embed_url, height=height, scrolling=False)
-        st.caption("Windy 공개 embed · WINDY_API_KEY 설정 시 API 모드")
+        if on_cloud and key:
+            st.caption("Cloud 환경: Windy는 공개 embed 사용 (API는 로컬 전용)")
+        _render_windy_embed(lat, lon, region, date_str, height)
 
     if time_token:
         st.markdown(
@@ -593,8 +607,6 @@ def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, 
         )
     else:
         st.markdown(f"[🗺️ Windy 전체 화면](https://www.windy.com/{lat}/{lon})")
-
-
 
 
 # ==================== 사이드바 ====================
