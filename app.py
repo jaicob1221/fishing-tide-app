@@ -165,6 +165,35 @@ def get_data_go_kr_key():
         return ""
 
 
+def _sanitize_api_error(err: Exception) -> str:
+    """에러 메시지에서 serviceKey 등 민감정보 제거"""
+    msg = f"{type(err).__name__}: {err}"
+    msg = re.sub(r"serviceKey=[^&\s]+", "serviceKey=***", msg)
+    msg = re.sub(r"[0-9a-f]{40,}", "***", msg, flags=re.I)
+    if "ConnectTimeout" in type(err).__name__ or "timed out" in msg.lower():
+        return "공공데이터 서버 연결 시간 초과 (잠시 후 다시 시도해 주세요)"
+    if "ConnectionError" in type(err).__name__ or "Max retries" in msg:
+        return "공공데이터 서버에 연결할 수 없습니다 (네트워크·서버 상태 확인)"
+    return msg[:180]
+
+
+def _requests_get_retry(url: str, params: dict, timeout: int = 30, retries: int = 3):
+    """data.go.kr 호출용 재시도"""
+    import time
+    last_err = None
+    for i in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            return r
+        except Exception as e:
+            last_err = e
+            if i < retries - 1:
+                time.sleep(1.2 * (i + 1))
+    raise last_err
+
+
+
+
 @st.cache_data(ttl=900)
 def fetch_khoa_tide(obs_code: str, yyyymmdd: str, key: str) -> dict:
     """국립해양조사원 조위관측소 실측·예측 조위"""
@@ -181,7 +210,7 @@ def fetch_khoa_tide(obs_code: str, yyyymmdd: str, key: str) -> dict:
             "pageNo": 1,
             "min": 10,  # 10분 간격
         }
-        r = requests.get(url, params=params, timeout=15)
+        r = _requests_get_retry(url, params, timeout=30, retries=3)
         r.raise_for_status()
         data = r.json()
         header = data.get("header") or {}
@@ -218,10 +247,8 @@ def fetch_khoa_tide(obs_code: str, yyyymmdd: str, key: str) -> dict:
             "count": len(valid),
         }
     except Exception as e:
-        return {"ok": False, "msg": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "msg": _sanitize_api_error(e)}
 
-
-@st.cache_data(ttl=900)
 
 @st.cache_data(ttl=1800)
 def fetch_fishing_index(req_date: str, region: str, key: str, gubun: str = "선상") -> dict:
@@ -240,7 +267,7 @@ def fetch_fishing_index(req_date: str, region: str, key: str, gubun: str = "선�
             "pageNo": 1,
             "numOfRows": 300,
         }
-        r = requests.get(url, params=params, timeout=20)
+        r = _requests_get_retry(url, params, timeout=35, retries=3)
         if r.status_code != 200:
             return {"ok": False, "msg": f"HTTP {r.status_code}"}
         data = r.json()
@@ -306,7 +333,7 @@ def fetch_fishing_index(req_date: str, region: str, key: str, gubun: str = "선�
             "date": req_date,
         }
     except Exception as e:
-        return {"ok": False, "msg": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "msg": _sanitize_api_error(e)}
 
 
 def fetch_khoa_wave(obs_code: str, key: str) -> dict:
