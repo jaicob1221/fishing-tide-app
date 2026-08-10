@@ -1140,9 +1140,15 @@ for week in month_days:
         continue
     week_num += 1
     first, last = days_in_week[0], days_in_week[-1]
+    # 현재일이 속한 주차만 기본 펼침 (다른 달은 선택일 우선, 없으면 접힘)
+    today = date.today()
+    contains_today = (
+        year == today.year and month == today.month and today.day in days_in_week
+    )
+    contains_selected = selected_day in days_in_week if selected_day else False
     with st.expander(
         f"{week_num}주차  ({first}일 ~ {last}일)",
-        expanded=(week_num <= 2 or (selected_day in days_in_week if selected_day else False)),
+        expanded=(contains_today or contains_selected),
     ):
         for day in days_in_week:
             lunar_day = get_lunar_day(year, month, day)
