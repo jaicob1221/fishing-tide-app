@@ -5,6 +5,7 @@ from openai import OpenAI
 import calendar as cal
 import os
 import requests
+import re
 
 # ==================== 페이지 설정 ====================
 st.set_page_config(
@@ -167,9 +168,10 @@ def get_data_go_kr_key():
 
 def _sanitize_api_error(err: Exception) -> str:
     """에러 메시지에서 serviceKey 등 민감정보 제거"""
+    import re as _re
     msg = f"{type(err).__name__}: {err}"
-    msg = re.sub(r"serviceKey=[^&\s]+", "serviceKey=***", msg)
-    msg = re.sub(r"[0-9a-f]{40,}", "***", msg, flags=re.I)
+    msg = _re.sub(r"serviceKey=[^&\s]+", "serviceKey=***", msg)
+    msg = _re.sub(r"[0-9a-f]{40,}", "***", msg, flags=_re.I)
     if "ConnectTimeout" in type(err).__name__ or "timed out" in msg.lower():
         return "공공데이터 서버 연결 시간 초과 (잠시 후 다시 시도해 주세요)"
     if "ConnectionError" in type(err).__name__ or "Max retries" in msg:
