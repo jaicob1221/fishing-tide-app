@@ -92,22 +92,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 사이드바 하단 임시 진단
-if st.sidebar.button("네트워크 진단"):
-    import socket, time, requests
-    for host in ["apis.data.go.kr", "api.open-meteo.com", "api.openai.com"]:
-        t0 = time.time()
-        try:
-            socket.create_connection((host, 443), timeout=5).close()
-            st.sidebar.success(f"{host} TCP OK ({time.time()-t0:.1f}s)")
-        except Exception as e:
-            st.sidebar.error(f"{host} TCP FAIL: {type(e).__name__}")
-    t0 = time.time()
-    try:
-        r = requests.get("https://apis.data.go.kr", timeout=8)
-        st.sidebar.info(f"data.go.kr HTTP {r.status_code} ({time.time()-t0:.1f}s)")
-    except Exception as e:
-        st.sidebar.error(f"data.go.kr HTTP FAIL: {type(e).__name__}")
+
 
 # ==================== 지역 좌표 (날씨용) ====================
 REGION_COORDS = {
@@ -194,18 +179,42 @@ def _sanitize_api_error(err: Exception) -> str:
     return msg[:180]
 
 
-def _requests_get_retry(url: str, params: dict, timeout: int = 30, retries: int = 3):
-    """data.go.kr 호출용 재시도"""
+def _ssl_verify() -> bool:
+    """로컬 인증서 문제 시 secrets SSL_INSECURE=true → verify 끄기"""
+    try:
+        if bool(st.secrets.get("SSL_INSECURE", False)):
+            return False
+    except Exception:
+        pass
+    if os.environ.get("SSL_INSECURE") == "1":
+        return False
+    return True
+
+
+def _requests_get_retry(url: str, params: dict = None, timeout: int = 10, retries: int = 2, **kwargs):
+    """외부 API 호출용 재시도 (SSL_INSECURE 지원)
+    timeout/retries 기본값을 짧게 둬서 실패 시 화면이 오래 멈추지 않게 함.
+    """
     import time
     last_err = None
+    verify = kwargs.pop("verify", _ssl_verify())
+    params = params or {}
+    # connect timeout을 짧게 (tuple: connect, read)
+    to = (min(6, timeout), timeout) if not isinstance(timeout, tuple) else timeout
     for i in range(retries):
         try:
-            r = requests.get(url, params=params, timeout=timeout)
+            r = requests.get(url, params=params, timeout=to, verify=verify, **kwargs)
             return r
         except Exception as e:
             last_err = e
+            if verify and ("SSL" in type(e).__name__ or "CERTIFICATE" in str(e).upper() or "SSLError" in str(type(e))):
+                try:
+                    r = requests.get(url, params=params, timeout=to, verify=False, **kwargs)
+                    return r
+                except Exception as e2:
+                    last_err = e2
             if i < retries - 1:
-                time.sleep(1.2 * (i + 1))
+                time.sleep(0.4)
     raise last_err
 
 
@@ -227,7 +236,7 @@ def fetch_khoa_tide(obs_code: str, yyyymmdd: str, key: str) -> dict:
             "pageNo": 1,
             "min": 10,  # 10분 간격
         }
-        r = _requests_get_retry(url, params, timeout=30, retries=3)
+        r = _requests_get_retry(url, params, timeout=8, retries=1)
         r.raise_for_status()
         data = r.json()
         header = data.get("header") or {}
@@ -284,7 +293,7 @@ def fetch_fishing_index(req_date: str, region: str, key: str, gubun: str = "선�
             "pageNo": 1,
             "numOfRows": 300,
         }
-        r = _requests_get_retry(url, params, timeout=35, retries=3)
+        r = _requests_get_retry(url, params, timeout=8, retries=1)
         if r.status_code != 200:
             return {"ok": False, "msg": f"HTTP {r.status_code}"}
         data = r.json()
@@ -399,17 +408,21 @@ def get_openai_client():
         if not api_key or str(api_key).startswith("sk-여기에"):
             return None
 
-        # 로컬 SSL 문제가 있을 때만 우회 (클라우드에서는 기본 검증 사용)
         use_insecure = False
         try:
             use_insecure = bool(st.secrets.get("SSL_INSECURE", False))
         except Exception:
             pass
+        if os.environ.get("SSL_INSECURE") == "1":
+            use_insecure = True
 
-        if use_insecure or os.environ.get("SSL_INSECURE") == "1":
-            import httpx
-            return OpenAI(api_key=api_key, http_client=httpx.Client(verify=False))
-        return OpenAI(api_key=api_key)
+        import httpx
+        # 로컬 SSL/프록시 환경 대응: timeout 넉넉히
+        http_client = httpx.Client(
+            verify=not use_insecure,
+            timeout=httpx.Timeout(60.0, connect=30.0),
+        )
+        return OpenAI(api_key=api_key, http_client=http_client)
     except Exception:
         return None
 
@@ -1060,7 +1073,17 @@ def get_llm_advice(client, date_str, region, sea, mul, fishes, month=None):
         body = response.choices[0].message.content
         return body + f"\n\n---\n*참고: 네이버 블로그·카페 '{month}월 어종 조행기' 검색 + 현장 주류 공법 기반. 당일 현장과 다를 수 있습니다.*"
     except Exception as e:
-        return f"⚠️ LLM 오류: {type(e).__name__}: {e}"
+        err_name = type(e).__name__
+        err_s = str(e)
+        if "Connection" in err_name or "connection" in err_s.lower() or "SSL" in err_s:
+            return (
+                "⚠️ OpenAI 연결 실패\n\n"
+                "1) secrets.toml 에 `SSL_INSECURE = true` 가 있는지 확인\n"
+                "2) 앱을 완전히 종료 후 run.bat 으로 다시 실행\n"
+                "3) 방화벽/백신이 openai.com 을 막는지 확인\n"
+                "4) 같은 키로 이전에 만든 도구가 되면 키는 정상 → 네트워크/SSL 문제"
+            )
+        return f"⚠️ LLM 오류: {err_name}: {err_s[:200]}"
 
 
 def render_stat_row(items, accent="#1e88e5"):
@@ -1113,7 +1136,7 @@ def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
             "&timezone=Asia%2FSeoul"
             f"&start_date={target_date}&end_date={target_date}"
         )
-        r = requests.get(url, timeout=10)
+        r = _requests_get_retry(url, params=None, timeout=15, retries=2)
         if r.status_code == 400:
             result["out_of_range"] = True
             result["msg"] = "날씨 예보는 오늘 기준 최대 16일까지 지원됩니다. 더 가까운 날짜를 선택해 주세요."
@@ -1122,12 +1145,14 @@ def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
         daily = r.json().get("daily", {})
         marine = {}
         try:
-            mr = requests.get(
+            mr = _requests_get_retry(
                 "https://marine-api.open-meteo.com/v1/marine"
                 f"?latitude={lat}&longitude={lon}"
                 "&daily=wave_height_max,wave_period_max&timezone=Asia%2FSeoul"
                 f"&start_date={target_date}&end_date={target_date}",
-                timeout=10,
+                params=None,
+                timeout=15,
+                retries=2,
             )
             if mr.status_code == 200:
                 marine = mr.json().get("daily", {})
@@ -1152,8 +1177,10 @@ def fetch_weather(lat: float, lon: float, target_date: str) -> dict:
         if "400" in err or "Bad Request" in err:
             result["out_of_range"] = True
             result["msg"] = "날씨 예보는 오늘 기준 최대 16일까지 지원됩니다. 더 가까운 날짜를 선택해 주세요."
+        elif "SSL" in err or "CERTIFICATE" in err.upper():
+            result["msg"] = "SSL 인증서 오류 — secrets.toml에 SSL_INSECURE = true 를 넣고 재실행해 주세요."
         else:
-            result["msg"] = err
+            result["msg"] = _sanitize_api_error(e)
         return result
 
 
@@ -1248,6 +1275,36 @@ if st.session_state.get("selected_day"):
         ("조류 경향", note, ""),
     ], accent="#546e7a")
 
+    st.markdown("##### 🌤️ 해당일 날씨 / 해상 정보")
+
+    lat, lon = REGION_COORDS.get(region, (37.5, 127.0))
+    weather = fetch_weather(lat, lon, date_str)
+    if weather.get("ok"):
+        tmax, tmin = weather.get("tmax"), weather.get("tmin")
+        rain = weather.get("rain") or 0
+        wind = weather.get("wind")
+        temp_s = f"{tmin:.0f}~{tmax:.0f}°C" if tmax is not None and tmin is not None else "-"
+        wind_s = f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})" if wind is not None else "-"
+        wave = weather.get("wave")
+        period = weather.get("wave_period")
+        wave_s = f"{wave:.1f} m" if wave is not None else "-"
+        period_s = f"주기 {period:.0f}초" if period else ""
+        render_stat_row([
+            ("하늘", weather.get("sky", "-"), ""),
+            ("기온", temp_s, ""),
+            ("강수", f"{rain:.1f} mm", ""),
+            ("풍속", wind_s, ""),
+            ("파고(예보)", wave_s, period_s),
+        ], accent="#6a1b9a")
+        st.caption(f"Open-Meteo · {region} ({lat:.2f}, {lon:.2f})")
+    else:
+        msg = weather.get("msg") or "날씨 정보를 불러오지 못했어요."
+        if weather.get("out_of_range"):
+            st.info(f"ℹ️ {msg}")
+        else:
+            st.warning(f"날씨: {msg}")
+    st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
+
     st.markdown("##### 🌊 국립해양조사원 조위")
     ymd = date_str.replace("-", "")
     tide_code = TIDE_STATIONS.get(region, "")
@@ -1288,36 +1345,6 @@ if st.session_state.get("selected_day"):
         )
     else:
         st.caption(f"낚시지수: {fidx.get('msg', '조회 실패')} · gubun=선상")
-
-    st.markdown("##### 🌤️ 해당일 날씨 / 해상 정보")
-
-    lat, lon = REGION_COORDS.get(region, (37.5, 127.0))
-    weather = fetch_weather(lat, lon, date_str)
-    if weather.get("ok"):
-        tmax, tmin = weather.get("tmax"), weather.get("tmin")
-        rain = weather.get("rain") or 0
-        wind = weather.get("wind")
-        temp_s = f"{tmin:.0f}~{tmax:.0f}°C" if tmax is not None and tmin is not None else "-"
-        wind_s = f"{wind:.1f} m/s ({wind_dir_text(weather.get('wind_dir'))})" if wind is not None else "-"
-        wave = weather.get("wave")
-        period = weather.get("wave_period")
-        wave_s = f"{wave:.1f} m" if wave is not None else "-"
-        period_s = f"주기 {period:.0f}초" if period else ""
-        render_stat_row([
-            ("하늘", weather.get("sky", "-"), ""),
-            ("기온", temp_s, ""),
-            ("강수", f"{rain:.1f} mm", ""),
-            ("풍속", wind_s, ""),
-            ("파고(예보)", wave_s, period_s),
-        ], accent="#6a1b9a")
-        st.caption(f"Open-Meteo · {region} ({lat:.2f}, {lon:.2f})")
-    else:
-        msg = weather.get("msg") or "날씨 정보를 불러오지 못했어요."
-        if weather.get("out_of_range"):
-            st.info(f"ℹ️ {msg}")
-        else:
-            st.warning(f"날씨: {msg}")
-    st.markdown(f"[🗺️ Windy에서 {region} 해상 날씨 보기](https://www.windy.com/{lat}/{lon})")
 
     col1, col2 = st.columns([1, 2])
     with col1:
