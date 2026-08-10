@@ -92,7 +92,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
+# 사이드바 하단 임시 진단
+if st.sidebar.button("네트워크 진단"):
+    import socket, time, requests
+    for host in ["apis.data.go.kr", "api.open-meteo.com", "api.openai.com"]:
+        t0 = time.time()
+        try:
+            socket.create_connection((host, 443), timeout=5).close()
+            st.sidebar.success(f"{host} TCP OK ({time.time()-t0:.1f}s)")
+        except Exception as e:
+            st.sidebar.error(f"{host} TCP FAIL: {type(e).__name__}")
+    t0 = time.time()
+    try:
+        r = requests.get("https://apis.data.go.kr", timeout=8)
+        st.sidebar.info(f"data.go.kr HTTP {r.status_code} ({time.time()-t0:.1f}s)")
+    except Exception as e:
+        st.sidebar.error(f"data.go.kr HTTP FAIL: {type(e).__name__}")
 
 # ==================== 지역 좌표 (날씨용) ====================
 REGION_COORDS = {
