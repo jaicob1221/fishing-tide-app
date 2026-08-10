@@ -87,7 +87,7 @@ st.markdown(
     """
 <div class="app-header">
   <p class="title">🌊 물때 선상낚시 도우미</p>
-  <p class="subtitle">지역·월별 물때 달력 · 실측 날씨 · AI 추천 어종 · 낚시 조언</p>
+  <p class="subtitle">지역·월별 물때 달력 · 실측 날씨 · 추천 어종 · 조행기 링크</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -629,19 +629,8 @@ with st.sidebar:
 
     st.divider()
 
-    client = get_openai_client()
-    if client:
-        st.success("✅ OpenAI API 키 로드됨")
-        if st.button("API 연결 테스트", key="test_api"):
-            with st.spinner("테스트 중..."):
-                try:
-                    models = client.models.list()
-                    st.success(f"✅ 연결 성공! (모델 {len(list(models.data))}개)")
-                except Exception as e:
-                    st.error(f"❌ 연결 실패: {type(e).__name__}: {e}")
-                    st.caption("로컬 SSL 문제면 secrets.toml에 SSL_INSECURE = true 추가")
-    else:
-        st.warning("⚠️ secrets에 OPENAI_API_KEY를 설정해주세요")
+    client = None  # AI 조언 기능 비활성화 (비용 절감). 조행기 링크 사용
+    st.caption("AI 조언 기능 제외됨 · 조행기 링크 사용")
 
     nid, nsec = get_naver_credentials()
     if nid and nsec:
@@ -1005,6 +994,52 @@ def naver_search(query: str, client_id: str, client_secret: str, kind: str = "bl
                 "query": query,
             })
     return results
+
+
+
+def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_links: int = 8) -> list:
+    """추천 어종 기준 네이버 블로그·카페 조행기 링크 수집 (중복 제거)"""
+    client_id, client_secret = get_naver_credentials()
+    if not client_id or not client_secret:
+        return []
+    if not fishes:
+        fishes = ["선상"]
+    seen = set()
+    out = []
+    queries = []
+    for fish in fishes[:3]:
+        queries.append(f"{month}월 {region} {fish} 선상 조행기")
+        queries.append(f"{region} {fish} 조행기")
+    queries.append(f"{month}월 {region} 선상 조행기")
+    queries.append(f"{month}월 {sea} 선상낚시 조행기")
+
+    for q in queries:
+        if len(out) >= max_links:
+            break
+        for kind in ("blog", "cafe"):
+            if len(out) >= max_links:
+                break
+            try:
+                items = naver_search(q, client_id, client_secret, kind=kind, display=10)
+            except Exception:
+                items = []
+            for it in items:
+                link = (it.get("link") or "").strip()
+                title = (it.get("title") or "").strip()
+                if not link or not title:
+                    continue
+                key = link.split("?")[0]
+                if key in seen:
+                    continue
+                # 조행/선상/어종 관련성 약필터
+                blob = f"{title} {it.get('description') or ''}"
+                if not any(x in blob for x in ("조행", "선상", "낚시") + tuple(fishes)):
+                    continue
+                seen.add(key)
+                out.append(it)
+                if len(out) >= max_links:
+                    break
+    return out[:max_links]
 
 
 def _item_text(it: dict) -> str:
@@ -1529,14 +1564,10 @@ if st.session_state.get("selected_day"):
         st.caption("네이버 선상 조행기 검색 빈도 기준 (지역·월 반영)")
         if "selected_fishes" not in st.session_state:
             with st.spinner("네이버 조행기 검색으로 어종 집계 중..."):
-                st.session_state["selected_fishes"] = recommend_fish_by_gpt(
-                    client, date_str, region, sea_area, mul, month
-                )
+                st.session_state["selected_fishes"] = recommend_fish_by_naver(region, sea_area, month)
         fishes = st.session_state["selected_fishes"]
         if st.button("🔄 다시 추천받기", key="refresh_fish"):
-            st.session_state["selected_fishes"] = recommend_fish_by_gpt(
-                client, date_str, region, sea_area, mul, month
-            )
+            st.session_state["selected_fishes"] = recommend_fish_by_naver(region, sea_area, month)
             st.rerun()
         icons = {
             "광어": "🐟", "우럭": "🐠", "참돔": "🐡", "농어": "🎣", "주꾸미": "🐙",
@@ -1557,14 +1588,40 @@ if st.session_state.get("selected_day"):
         st.link_button("선상24 전체 예약 페이지", sunsang24_link(region), use_container_width=True)
 
     with col2:
-        st.markdown("### 🤖 AI 낚시조언")
-        if st.button("AI 상세 조언 받기", type="primary"):
-            with st.spinner("조행기 검색 + 조언 생성 중..."):
-                st.session_state["last_advice"] = get_llm_advice(
-                    client, date_str, region, sea_area, mul, fishes, month
+        st.markdown("### 📰 조행기 · 카페 글")
+        st.caption("네이버 블로그·카페에서 지역·월·추천 어종 기준으로 모은 링크")
+        cache_key = f"jog_links_{date_str}_{region}_{'-'.join(fishes)}"
+        if st.button("🔄 조행기 다시 검색", key="refresh_jog"):
+            st.session_state.pop(cache_key, None)
+            st.rerun()
+        if cache_key not in st.session_state:
+            with st.spinner("네이버 블로그·카페 조행기 검색 중..."):
+                st.session_state[cache_key] = fetch_joghaengi_links(
+                    region, sea_area, month, fishes, max_links=8
                 )
-        if "last_advice" in st.session_state:
-            st.markdown(st.session_state["last_advice"])
+        links = st.session_state.get(cache_key) or []
+        if not links:
+            st.info(
+                "검색된 조행기 링크가 없습니다. 네이버 API 키를 확인하거나 "
+                f"[네이버에서 '{month}월 {region} 선상 조행기' 검색](https://search.naver.com/search.naver?query={month}월+{region}+선상+조행기)을 이용해 보세요."
+            )
         else:
-            st.info("버튼을 누르면 'N월 어종 조행기' 검색을 반영한 실전 조언을 생성합니다.")
+            for it in links:
+                kind_label = "블로그" if it.get("kind") == "blog" else "카페"
+                src = it.get("source") or kind_label
+                pd = it.get("postdate") or ""
+                if len(pd) == 8 and pd.isdigit():
+                    pd = f"{pd[:4]}-{pd[4:6]}-{pd[6:]}"
+                meta = f"{kind_label} · {src}" + (f" · {pd}" if pd else "")
+                title = it.get("title") or "제목 없음"
+                desc = (it.get("description") or "")[:120]
+                link = it.get("link") or "#"
+                st.markdown(
+                    f'<div style="border:1px solid #e0e0e0;border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fafafa;">'
+                    f'<a href="{link}" target="_blank" style="font-weight:600;color:#1565c0;text-decoration:none;">{title}</a>'
+                    f'<div style="font-size:12px;color:#888;margin-top:4px;">{meta}</div>'
+                    f'<div style="font-size:13px;color:#555;margin-top:4px;">{desc}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
 
