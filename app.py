@@ -1027,27 +1027,39 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
     if not fishes:
         fishes = ["광어", "우럭"]
 
-    # ---------- 1단계: 추천어종 중심 검색 풀 ----------
+    # ---------- 1단계: 추천어종 중심 포괄 검색 풀 ----------
+    # 조행기 / 낚시 / 출조 등 실제 많이 쓰는 표현을 폭넓게 검색
     queries = []
     for fish in fishes[:3]:
         queries.extend([
             f"{fish} 선상 조행기",
+            f"{fish} 선상 낚시",
+            f"{fish} 선상 출조",
+            f"{fish} 출조",
             f"{fish} 조행기",
-            f"{region} {fish} 조행기",
-            f"{month}월 {fish} 조행기",
+            f"{fish} 선상",
+            f"{region} {fish} 선상",
+            f"{region} {fish} 출조",
+            f"{month}월 {fish} 선상",
+            f"{month}월 {fish} 출조",
         ])
     # 중복 쿼리 제거 (순서 유지)
     seen_q = set()
     queries = [q for q in queries if not (q in seen_q or seen_q.add(q))]
 
-    keywords = ("조행", "선상", "낚시", "포인트", "입질", "채비") + tuple(fishes)
+    keywords = ("조행", "선상", "낚시", "출조", "포인트", "입질", "채비", "낚시터") + tuple(fishes)
     seen_link = set()
     stage1 = []
+    MAX_POOL = 50  # 풀이 충분히 모이면 추가 API 호출 중단
 
     for q in queries:
+        if len(stage1) >= MAX_POOL:
+            break
         for kind in ("blog", "cafe"):
+            if len(stage1) >= MAX_POOL:
+                break
             try:
-                items = naver_search(q, client_id, client_secret, kind=kind, display=20, sort="date")
+                items = naver_search(q, client_id, client_secret, kind=kind, display=15, sort="date")
             except Exception:
                 items = []
             for it in items:
@@ -1064,6 +1076,8 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
                 seen_link.add(key)
                 it["query"] = q
                 stage1.append(it)
+                if len(stage1) >= MAX_POOL:
+                    break
 
     if not stage1:
         return []
