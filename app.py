@@ -912,7 +912,7 @@ def recommend_fish_by_naver(region: str, sea: str, month: int) -> list:
     for qi, q in enumerate(queries_stage):
         for kind in ("blog", "cafe"):
             try:
-                items = naver_search(q, client_id, client_secret, kind=kind, display=20)
+                items = naver_search(q, client_id, client_secret, kind=kind, display=20, sort="sim")
             except Exception:
                 items = []
             for it in items:
@@ -959,8 +959,8 @@ def recommend_fish_by_gpt(client, date_str: str, region: str, sea: str, mul: str
     return recommend_fish_by_naver(region, sea, month)
 
 
-def naver_search(query: str, client_id: str, client_secret: str, kind: str = "blog", display: int = 15) -> list:
-    """네이버 검색 API (blog / cafearticle)"""
+def naver_search(query: str, client_id: str, client_secret: str, kind: str = "blog", display: int = 15, sort: str = "date") -> list:
+    """네이버 검색 API (blog / cafearticle). sort=date(최신) 또는 sim(유사도)"""
     import re
     endpoints = {
         "blog": "https://openapi.naver.com/v1/search/blog.json",
@@ -971,11 +971,14 @@ def naver_search(query: str, client_id: str, client_secret: str, kind: str = "bl
         "X-Naver-Client-Id": client_id,
         "X-Naver-Client-Secret": client_secret,
     }
-    params = {"query": query, "display": display, "sort": "sim"}
-    r = requests.get(url, headers=headers, params=params, timeout=10)
-    if r.status_code != 200:
+    params = {"query": query, "display": min(display, 30), "sort": sort if sort in ("date", "sim") else "date"}
+    try:
+        r = _requests_get_retry(url, params=params, timeout=10, retries=2, headers=headers)
+        if r is None or r.status_code != 200:
+            return []
+        items = r.json().get("items") or []
+    except Exception:
         return []
-    items = r.json().get("items") or []
     results = []
     for it in items:
         title = re.sub(r"<[^>]+>", "", it.get("title") or "").strip()
@@ -997,30 +1000,54 @@ def naver_search(query: str, client_id: str, client_secret: str, kind: str = "bl
 
 
 
+def _post_month(postdate: str) -> int | None:
+    """YYYYMMDD → 월(1~12). 파싱 실패 시 None"""
+    if not postdate or len(postdate) != 8 or not postdate.isdigit():
+        return None
+    try:
+        m = int(postdate[4:6])
+        return m if 1 <= m <= 12 else None
+    except Exception:
+        return None
+
+
 def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_links: int = 8) -> list:
-    """추천 어종 기준 네이버 블로그·카페 조행기 링크 수집 (중복 제거)"""
+    """조행기 링크 단계적 필터 캐스케이드
+
+    1단계: 추천어종 중심 검색으로 풀 수집
+    2단계: 1단계 결과 중 선택 지역이 제목/요약에 포함된 것만
+    3단계: 2단계 결과 중 선택월 ± 인접월(±1) 게시일만
+
+    3단계 결과 없으면 → 2단계로 하향
+    2단계 결과 없으면 → 1단계로 하향
+    """
     client_id, client_secret = get_naver_credentials()
     if not client_id or not client_secret:
         return []
     if not fishes:
-        fishes = ["선상"]
-    seen = set()
-    out = []
+        fishes = ["광어", "우럭"]
+
+    # ---------- 1단계: 추천어종 중심 검색 풀 ----------
     queries = []
     for fish in fishes[:3]:
-        queries.append(f"{month}월 {region} {fish} 선상 조행기")
-        queries.append(f"{region} {fish} 조행기")
-    queries.append(f"{month}월 {region} 선상 조행기")
-    queries.append(f"{month}월 {sea} 선상낚시 조행기")
+        queries.extend([
+            f"{fish} 선상 조행기",
+            f"{fish} 조행기",
+            f"{region} {fish} 조행기",
+            f"{month}월 {fish} 조행기",
+        ])
+    # 중복 쿼리 제거 (순서 유지)
+    seen_q = set()
+    queries = [q for q in queries if not (q in seen_q or seen_q.add(q))]
+
+    keywords = ("조행", "선상", "낚시", "포인트", "입질", "채비") + tuple(fishes)
+    seen_link = set()
+    stage1 = []
 
     for q in queries:
-        if len(out) >= max_links:
-            break
         for kind in ("blog", "cafe"):
-            if len(out) >= max_links:
-                break
             try:
-                items = naver_search(q, client_id, client_secret, kind=kind, display=10)
+                items = naver_search(q, client_id, client_secret, kind=kind, display=20, sort="date")
             except Exception:
                 items = []
             for it in items:
@@ -1029,17 +1056,70 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
                 if not link or not title:
                     continue
                 key = link.split("?")[0]
-                if key in seen:
+                if key in seen_link:
                     continue
-                # 조행/선상/어종 관련성 약필터
                 blob = f"{title} {it.get('description') or ''}"
-                if not any(x in blob for x in ("조행", "선상", "낚시") + tuple(fishes)):
+                if not any(x in blob for x in keywords):
                     continue
-                seen.add(key)
-                out.append(it)
-                if len(out) >= max_links:
-                    break
-    return out[:max_links]
+                seen_link.add(key)
+                it["query"] = q
+                stage1.append(it)
+
+    if not stage1:
+        return []
+
+    # ---------- 2단계: 1단계 결과에서 선택 지역 필터 ----------
+    region_kw = [region]
+    # 간단한 지역 변형 (필요 시 확장)
+    if region == "인천":
+        region_kw += ["인천항", "영종", "강화", "월미"]
+    elif region == "서해":
+        region_kw += ["군산", "보령", "태안", "대천"]
+    stage2 = []
+    for it in stage1:
+        blob = _item_text(it)
+        if any(kw in blob for kw in region_kw if kw):
+            stage2.append(it)
+
+    # ---------- 3단계: 2단계 결과에서 선택월 ± 인접월 필터 ----------
+    adj_months = set()
+    for d in (-1, 0, 1):
+        m = month + d
+        if m < 1:
+            m = 12
+        elif m > 12:
+            m = 1
+        adj_months.add(m)
+
+    stage3 = []
+    for it in stage2:
+        pm = _post_month(it.get("postdate") or "")
+        # postdate가 있고 선택월±1에 해당하는 경우만 Stage3 통과
+        if pm is not None and pm in adj_months:
+            stage3.append(it)
+
+    # ---------- 하향 선택 ----------
+    if stage3:
+        chosen = stage3
+        stage_used = 3
+    elif stage2:
+        chosen = stage2
+        stage_used = 2
+    else:
+        chosen = stage1
+        stage_used = 1
+
+    # 관련성 점수 정렬
+    try:
+        chosen = sorted(chosen, key=lambda it: _final_score(it, month, fishes, region), reverse=True)
+    except Exception:
+        pass
+
+    # 메타 정보 기록 (UI에서 단계 표시용)
+    for it in chosen:
+        it["cascade_stage"] = stage_used
+
+    return chosen[:max_links]
 
 
 def _item_text(it: dict) -> str:
@@ -1589,10 +1669,11 @@ if st.session_state.get("selected_day"):
 
     with col2:
         st.markdown("### 📰 조행기 · 카페 글")
-        st.caption("네이버 블로그·카페에서 지역·월·추천 어종 기준으로 모은 링크")
+        st.caption("1단계 어종검색 → 2단계 지역필터 → 3단계 월(인접)필터 · 결과 없으면 이전 단계로 하향")
         cache_key = f"jog_links_{date_str}_{region}_{'-'.join(fishes)}"
         if st.button("🔄 조행기 다시 검색", key="refresh_jog"):
             st.session_state.pop(cache_key, None)
+            st.session_state.pop("selected_jog_idx", None)
             st.rerun()
         if cache_key not in st.session_state:
             with st.spinner("네이버 블로그·카페 조행기 검색 중..."):
@@ -1606,7 +1687,11 @@ if st.session_state.get("selected_day"):
                 f"[네이버에서 '{month}월 {region} 선상 조행기' 검색](https://search.naver.com/search.naver?query={month}월+{region}+선상+조행기)을 이용해 보세요."
             )
         else:
-            for it in links:
+            stage_used = links[0].get("cascade_stage", 1)
+            stage_label = {1: "1단계(어종)", 2: "2단계(지역)", 3: "3단계(월)"}.get(stage_used, "")
+            st.caption(f"현재 표시: **{stage_label}** 결과 · {len(links)}건")
+
+            for i, it in enumerate(links):
                 kind_label = "블로그" if it.get("kind") == "blog" else "카페"
                 src = it.get("source") or kind_label
                 pd = it.get("postdate") or ""
@@ -1614,14 +1699,39 @@ if st.session_state.get("selected_day"):
                     pd = f"{pd[:4]}-{pd[4:6]}-{pd[6:]}"
                 meta = f"{kind_label} · {src}" + (f" · {pd}" if pd else "")
                 title = it.get("title") or "제목 없음"
-                desc = (it.get("description") or "")[:120]
-                link = it.get("link") or "#"
-                st.markdown(
-                    f'<div style="border:1px solid #e0e0e0;border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fafafa;">'
-                    f'<a href="{link}" target="_blank" style="font-weight:600;color:#1565c0;text-decoration:none;">{title}</a>'
-                    f'<div style="font-size:12px;color:#888;margin-top:4px;">{meta}</div>'
-                    f'<div style="font-size:13px;color:#555;margin-top:4px;">{desc}</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+                desc = (it.get("description") or "")[:100]
+
+                # 제목 클릭 → 선택
+                col_t, col_b = st.columns([5, 1])
+                with col_t:
+                    st.markdown(
+                        f'<div style="border:1px solid #e0e0e0;border-radius:10px;padding:8px 12px;margin-bottom:4px;background:#fafafa;">'
+                        f'<div style="font-weight:600;color:#1565c0;font-size:14px;">{title}</div>'
+                        f'<div style="font-size:12px;color:#888;margin-top:3px;">{meta}</div>'
+                        f'<div style="font-size:12px;color:#555;margin-top:3px;">{desc}</div>'
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                with col_b:
+                    if st.button("보기", key=f"jog_view_{i}", use_container_width=True):
+                        st.session_state["selected_jog_idx"] = i
+                        st.rerun()
+
+            # 선택된 글 iframe + 원문 링크
+            sel_idx = st.session_state.get("selected_jog_idx")
+            if sel_idx is not None and 0 <= sel_idx < len(links):
+                sel = links[sel_idx]
+                st.markdown("---")
+                st.markdown(f"**📖 {sel.get('title') or '본문'}**")
+                link = sel.get("link") or "#"
+                st.caption("일부 네이버 블로그/카페는 iframe 차단으로 본문이 안 보일 수 있어요. 그때는 아래 버튼으로 새 탭에서 열어주세요.")
+                try:
+                    import streamlit.components.v1 as components
+                    components.iframe(link, height=480, scrolling=True)
+                except Exception:
+                    st.warning("iframe을 불러오지 못했습니다.")
+                st.link_button("🔗 원문 새 탭에서 열기", link, use_container_width=True)
+                if st.button("닫기", key="jog_close"):
+                    st.session_state.pop("selected_jog_idx", None)
+                    st.rerun()
 
