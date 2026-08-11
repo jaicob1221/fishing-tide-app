@@ -849,102 +849,138 @@ def get_species_method_guide(fishes: list) -> str:
 
 
 def get_seasonal_reference(sea: str, month: int) -> str:
+    """시즌별 대표 선상 대상어 (현장 출조 기준, 우선순위 높은 순)"""
     data = {
         "서해": {
             1: "우럭, 광어, 노래미", 2: "우럭, 광어, 노래미", 3: "우럭, 광어, 도다리",
-            4: "광어, 우럭, 도다리, 주꾸미", 5: "광어, 우럭, 농어, 주꾸미",
-            6: "광어, 우럭, 농어, 갑오징어", 7: "광어, 우럭, 농어, 갑오징어",
-            8: "광어, 우럭, 농어, 갑오징어", 9: "주꾸미, 갑오징어, 광어, 우럭",
+            4: "주꾸미, 광어, 우럭, 도다리", 5: "주꾸미, 광어, 우럭, 농어",
+            6: "갑오징어, 광어, 우럭, 농어", 7: "갑오징어, 광어, 농어, 우럭",
+            8: "갑오징어, 광어, 농어, 우럭", 9: "주꾸미, 갑오징어, 광어, 우럭",
             10: "주꾸미, 갑오징어, 광어, 우럭", 11: "우럭, 광어, 노래미", 12: "우럭, 광어, 노래미",
         },
         "동해": {
-            1: "볼락, 열기, 대구", 2: "볼락, 열기, 대구", 3: "볼락, 열기, 가자미",
-            4: "볼락, 열기, 가자미, 방어", 5: "볼락, 열기, 방어, 참돔",
-            6: "방어, 참돔, 볼락, 열기", 7: "방어, 부시리, 참돔",
+            1: "대구, 볼락, 열기", 2: "대구, 볼락, 열기", 3: "볼락, 열기, 가자미",
+            4: "볼락, 열기, 방어, 가자미", 5: "방어, 볼락, 열기, 참돔",
+            6: "방어, 부시리, 참돔, 볼락", 7: "방어, 부시리, 참돔",
             8: "방어, 부시리, 참돔", 9: "방어, 참돔, 볼락",
-            10: "볼락, 열기, 방어", 11: "볼락, 열기, 대구", 12: "볼락, 열기, 대구",
+            10: "볼락, 열기, 방어", 11: "대구, 볼락, 열기", 12: "대구, 볼락, 열기",
         },
         "남해": {
             1: "볼락, 감성돔, 참돔", 2: "볼락, 감성돔, 참돔", 3: "감성돔, 참돔, 볼락, 도다리",
-            4: "감성돔, 참돔, 농어, 한치", 5: "참돔, 감성돔, 농어, 한치",
-            6: "한치, 참돔, 농어, 부시리", 7: "한치, 부시리, 참돔, 농어",
-            8: "한치, 부시리, 참돔", 9: "참돔, 감성돔, 농어, 갑오징어",
+            4: "감성돔, 참돔, 한치, 농어", 5: "한치, 참돔, 감성돔, 농어",
+            6: "한치, 부시리, 참돔, 농어", 7: "한치, 부시리, 참돔, 농어",
+            8: "한치, 부시리, 참돔", 9: "참돔, 감성돔, 갑오징어, 농어",
             10: "감성돔, 참돔, 갑오징어, 볼락", 11: "감성돔, 볼락, 참돔", 12: "볼락, 감성돔, 참돔",
         },
     }
     return data.get(sea, {}).get(month, "광어, 우럭, 참돔")
 
 
-def recommend_fish_by_naver(region: str, sea: str, month: int) -> list:
-    """네이버 검색 빈도 기반 추천 어종 3종
-    단계: 선상낚시 → 지역 → (어종 후보 카운트) → 검색월 반영
+def recommend_fish_by_naver(region: str, sea: str, month: int, vary: bool = False) -> list:
+    """시즌 우선 + 네이버 검색 빈도 기반 추천 어종 3종
+
+    - 시즌 대표어에 강한 기본 점수 부여 (현장 유행 반영)
+    - 넓은 검색어(선상 낚시/배낚시/출조 후기 등)로 언급 빈도 집계
+    - vary=True 이면 상위 후보 중 약간 섞어서 '다시 추천' 시 결과 변화
     """
+    import random
+
     client_id, client_secret = get_naver_credentials()
-    seasonal_fallback = [f.strip() for f in get_seasonal_reference(sea, month).split(",")][:3]
+    seasonal_list = [f.strip() for f in get_seasonal_reference(sea, month).split(",") if f.strip()]
+    seasonal_fallback = seasonal_list[:3]
 
     if not client_id or not client_secret:
+        if vary and len(seasonal_list) > 3:
+            return random.sample(seasonal_list, 3)
         return seasonal_fallback
 
-    # 알려진 대상 어종 목록 (매칭용, 긴 이름 우선)
     known = [
         "주꾸미", "갑오징어", "한치", "광어", "우럭", "농어", "참돔", "감성돔",
         "볼락", "열기", "방어", "부시리", "돌돔", "노래미", "도다리", "가자미",
         "대구", "학꽁치", "붕장어", "삼치", "고등어",
     ]
 
-    queries_stage = [
-        # 1) 선상낚시 조행기
-        f"선상낚시 조행기",
-        f"선상 조행기 {sea}",
-        # 2) 지역
-        f"{region} 선상 조행기",
-        f"{region} 선상낚시 조행기",
-        # 3) 검색월
-        f"{month}월 {region} 선상 조행기",
-        f"{month}월 선상낚시 조행기 {sea}",
-        f"{month}월 {region} 조행기",
+    # 넓은 검색어 (조행기뿐 아니라 낚시/출조/후기)
+    queries = [
+        f"{month}월 {region} 선상 낚시",
+        f"{month}월 {region} 배낚시",
+        f"{month}월 {region} 출조",
+        f"{month}월 선상 낚시 {sea}",
+        f"{region} 선상 낚시",
+        f"{region} 배낚시 후기",
+        f"{region} 선상 출조",
+        f"{month}월 선상낚시 조행기",
+        "선상 낚시 후기",
+        "배낚시 조과",
     ]
 
-    counts = {k: 0 for k in known}
-    month_counts = {k: 0 for k in known}
+    counts = {k: 0.0 for k in known}
     seen_titles = set()
 
-    for qi, q in enumerate(queries_stage):
+    for q in queries:
         for kind in ("blog", "cafe"):
             try:
-                items = naver_search(q, client_id, client_secret, kind=kind, display=20, sort="sim")
+                items = naver_search(
+                    q, client_id, client_secret, kind=kind, display=20, sort="date"
+                )
             except Exception:
                 items = []
             for it in items:
                 title = it.get("title") or ""
-                if title[:40] in seen_titles:
+                key = title[:40]
+                if key in seen_titles:
                     continue
-                seen_titles.add(title[:40])
+                seen_titles.add(key)
                 blob = f"{title} {it.get('description') or ''}"
-                # 선상 관련 글만 약하게 가점 대상 (제목에 내륙만 있으면 스킵하지 않되 가중치)
-                weight = 1
-                if "선상" in blob:
-                    weight += 1
+                weight = 1.0
+                if "선상" in blob or "배낚" in blob:
+                    weight += 1.5
                 if region and region in blob:
-                    weight += 1
+                    weight += 1.0
                 if f"{month}월" in blob:
-                    weight += 2
-                # 월 단계 쿼리면 월 카운트에도 반영
-                is_month_q = qi >= 4
+                    weight += 2.0
+                # 최근 글 가점 (postdate)
+                pd = it.get("postdate") or ""
+                if len(pd) == 8 and pd.isdigit():
+                    try:
+                        from datetime import datetime as _dt
+                        age = (date.today() - _dt.strptime(pd, "%Y%m%d").date()).days
+                        if age <= 30:
+                            weight += 2.0
+                        elif age <= 90:
+                            weight += 1.0
+                    except Exception:
+                        pass
                 for fish in known:
                     if fish in blob:
                         counts[fish] += weight
-                        if is_month_q or f"{month}월" in blob:
-                            month_counts[fish] += weight
 
-    # 월 매칭 빈도에 가중을 더해 최종 점수
-    final = {}
-    for fish in known:
-        final[fish] = counts[fish] + month_counts[fish] * 1.5
+    # 시즌 대표어에 강한 기본 점수 (현장 유행 반영)
+    for i, fish in enumerate(seasonal_list):
+        if fish in counts:
+            # 1순위 +25, 2순위 +18, 3순위 +12, 이후 +6
+            bonus = 25.0 if i == 0 else (18.0 if i == 1 else (12.0 if i == 2 else 6.0))
+            counts[fish] += bonus
 
-    ranked = sorted(final.items(), key=lambda x: x[1], reverse=True)
-    top = [name for name, sc in ranked if sc > 0][:3]
+    ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    # 점수가 있는 상위 후보
+    candidates = [name for name, sc in ranked if sc > 0]
 
+    if vary and len(candidates) >= 4:
+        # 상위 6개 중 3개 샘플링 (시즌 1순위는 최대한 포함)
+        top_pool = candidates[:6]
+        primary = seasonal_list[0] if seasonal_list else None
+        if primary and primary in top_pool:
+            rest = [c for c in top_pool if c != primary]
+            picked = [primary] + random.sample(rest, min(2, len(rest)))
+        else:
+            picked = random.sample(top_pool, 3)
+        # 원래 점수 순서로 재정렬
+        score_map = dict(ranked)
+        picked = sorted(picked, key=lambda x: score_map.get(x, 0), reverse=True)
+        return picked[:3]
+
+    top = candidates[:3]
     if len(top) < 3:
         for f in seasonal_fallback:
             if f not in top:
@@ -1688,13 +1724,26 @@ if st.session_state.get("selected_day"):
     col1, col2 = st.columns([1, 2])
     with col1:
         st.markdown("### 🐟 추천 어종")
-        st.caption("네이버 선상 조행기 검색 빈도 기준 (지역·월 반영)")
+        st.caption("시즌 대표어 + 네이버 선상/배낚시 검색 빈도 (지역·월 반영)")
+        fish_key = f"fishes_{region}_{sea_area}_{month}"
+        if st.session_state.get("fish_cache_key") != fish_key:
+            st.session_state["fish_cache_key"] = fish_key
+            st.session_state.pop("selected_fishes", None)
         if "selected_fishes" not in st.session_state:
-            with st.spinner("네이버 조행기 검색으로 어종 집계 중..."):
-                st.session_state["selected_fishes"] = recommend_fish_by_naver(region, sea_area, month)
+            with st.spinner("시즌·검색 기준으로 어종 집계 중..."):
+                st.session_state["selected_fishes"] = recommend_fish_by_naver(
+                    region, sea_area, month, vary=False
+                )
         fishes = st.session_state["selected_fishes"]
         if st.button("🔄 다시 추천받기", key="refresh_fish"):
-            st.session_state["selected_fishes"] = recommend_fish_by_naver(region, sea_area, month)
+            st.session_state["selected_fishes"] = recommend_fish_by_naver(
+                region, sea_area, month, vary=True
+            )
+            # 어종 바뀌면 조행기 캐시도 비움
+            for k in list(st.session_state.keys()):
+                if isinstance(k, str) and k.startswith("jog_links_"):
+                    st.session_state.pop(k, None)
+            st.session_state.pop("selected_jog_idx", None)
             st.rerun()
         icons = {
             "광어": "🐟", "우럭": "🐠", "참돔": "🐡", "농어": "🎣", "주꾸미": "🐙",
