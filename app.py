@@ -1012,14 +1012,15 @@ def _post_month(postdate: str) -> int | None:
 
 
 def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_links: int = 8) -> list:
-    """조행기 링크 단계적 필터 캐스케이드
+    """조행기 링크 단계적 필터 캐스케이드 (필터 완화 버전)
 
-    1단계: 추천어종 중심 검색으로 풀 수집
-    2단계: 1단계 결과 중 선택 지역이 제목/요약에 포함된 것만
-    3단계: 2단계 결과 중 선택월 ± 인접월(±1) 게시일만
+    1단계: 넓은 키워드로 검색 풀 수집
+         (선상 낚시, 배낚시, 낚시 후기, 출조, 어종+낚시 등)
+    2단계: 1단계 결과 중 선택 지역이 제목/요약에 포함된 것
+    3단계: 2단계 결과 중 선택월 ± 인접월(±1) 게시일
 
-    3단계 결과 없으면 → 2단계로 하향
-    2단계 결과 없으면 → 1단계로 하향
+    3단계 없음 → 2단계 하향
+    2단계 없음 → 1단계 하향
     """
     client_id, client_secret = get_naver_credentials()
     if not client_id or not client_secret:
@@ -1027,30 +1028,55 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
     if not fishes:
         fishes = ["광어", "우럭"]
 
-    # ---------- 1단계: 추천어종 중심 포괄 검색 풀 ----------
-    # 조행기 / 낚시 / 출조 등 실제 많이 쓰는 표현을 폭넓게 검색
+    # ---------- 1단계: 넓고 다양한 검색어로 풀 수집 ----------
     queries = []
+
+    # 1-a) 일반·포괄 키워드 (어종 무관)
+    broad = [
+        "선상 낚시",
+        "선상 출조",
+        "배낚시",
+        "낚시 후기",
+        "버스 출조",
+        "선상낚시",
+        "배낚시 후기",
+        "선상 조행기",
+        "출조 후기",
+    ]
+    for b in broad:
+        queries.append(b)
+        queries.append(f"{region} {b}")
+        queries.append(f"{month}월 {b}")
+        queries.append(f"{month}월 {region} {b}")
+
+    # 1-b) 추천 어종 + 넓은 표현
     for fish in fishes[:3]:
         queries.extend([
-            f"{fish} 선상 조행기",
-            f"{fish} 선상 낚시",
-            f"{fish} 선상 출조",
-            f"{fish} 출조",
-            f"{fish} 조행기",
+            f"{fish} 낚시",
             f"{fish} 선상",
-            f"{region} {fish} 선상",
+            f"{fish} 출조",
+            f"{fish} 후기",
+            f"{fish} 배낚시",
+            f"{region} {fish} 낚시",
             f"{region} {fish} 출조",
-            f"{month}월 {fish} 선상",
+            f"{month}월 {fish} 낚시",
             f"{month}월 {fish} 출조",
+            f"{month}월 {region} {fish}",
         ])
-    # 중복 쿼리 제거 (순서 유지)
+
+    # 중복 제거 (순서 유지)
     seen_q = set()
     queries = [q for q in queries if not (q in seen_q or seen_q.add(q))]
 
-    keywords = ("조행", "선상", "낚시", "출조", "포인트", "입질", "채비", "낚시터") + tuple(fishes)
+    # 필터 키워드도 대폭 완화 (거의 통과)
+    keywords = (
+        "조행", "선상", "낚시", "출조", "배낚", "후기", "포인트",
+        "입질", "채비", "낚시터", "버스", "선사", "조과",
+    ) + tuple(fishes)
+
     seen_link = set()
     stage1 = []
-    MAX_POOL = 50  # 풀이 충분히 모이면 추가 API 호출 중단
+    MAX_POOL = 60
 
     for q in queries:
         if len(stage1) >= MAX_POOL:
@@ -1059,7 +1085,9 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
             if len(stage1) >= MAX_POOL:
                 break
             try:
-                items = naver_search(q, client_id, client_secret, kind=kind, display=15, sort="date")
+                items = naver_search(
+                    q, client_id, client_secret, kind=kind, display=20, sort="date"
+                )
             except Exception:
                 items = []
             for it in items:
@@ -1071,6 +1099,7 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
                 if key in seen_link:
                     continue
                 blob = f"{title} {it.get('description') or ''}"
+                # 매우 느슨한 필터: 키워드 하나도 없으면 스킵 (거의 통과)
                 if not any(x in blob for x in keywords):
                     continue
                 seen_link.add(key)
@@ -1082,20 +1111,24 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
     if not stage1:
         return []
 
-    # ---------- 2단계: 1단계 결과에서 선택 지역 필터 ----------
+    # ---------- 2단계: 지역 필터 (완화) ----------
     region_kw = [region]
-    # 간단한 지역 변형 (필요 시 확장)
     if region == "인천":
-        region_kw += ["인천항", "영종", "강화", "월미"]
-    elif region == "서해":
-        region_kw += ["군산", "보령", "태안", "대천"]
+        region_kw += ["인천항", "영종", "강화", "월미", "영흥", "자월", "덕적"]
+    elif region in ("서해", "보령", "군산", "태안"):
+        region_kw += ["군산", "보령", "태안", "대천", "서천", "안면도", "격포"]
+    elif region == "부산":
+        region_kw += ["기장", "다대", "영도", "가덕"]
+    elif region == "동해":
+        region_kw += ["속초", "강릉", "주문진", "임원", "삼척"]
+
     stage2 = []
     for it in stage1:
         blob = _item_text(it)
         if any(kw in blob for kw in region_kw if kw):
             stage2.append(it)
 
-    # ---------- 3단계: 2단계 결과에서 선택월 ± 인접월 필터 ----------
+    # ---------- 3단계: 월 ± 인접월 필터 ----------
     adj_months = set()
     for d in (-1, 0, 1):
         m = month + d
@@ -1108,7 +1141,6 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
     stage3 = []
     for it in stage2:
         pm = _post_month(it.get("postdate") or "")
-        # postdate가 있고 선택월±1에 해당하는 경우만 Stage3 통과
         if pm is not None and pm in adj_months:
             stage3.append(it)
 
@@ -1125,11 +1157,12 @@ def fetch_joghaengi_links(region: str, sea: str, month: int, fishes: list, max_l
 
     # 관련성 점수 정렬
     try:
-        chosen = sorted(chosen, key=lambda it: _final_score(it, month, fishes, region), reverse=True)
+        chosen = sorted(
+            chosen, key=lambda it: _final_score(it, month, fishes, region), reverse=True
+        )
     except Exception:
         pass
 
-    # 메타 정보 기록 (UI에서 단계 표시용)
     for it in chosen:
         it["cascade_stage"] = stage_used
 
@@ -1697,8 +1730,8 @@ if st.session_state.get("selected_day"):
         links = st.session_state.get(cache_key) or []
         if not links:
             st.info(
-                "검색된 출조 후기 링크가 없습니다. 네이버 API 키를 확인하거나 "
-                f"[네이버에서 '{month}월 {region} 선상 출조' 검색](https://search.naver.com/search.naver?query={month}월+{region}+선상+출조)을 이용해 보세요."
+                "검색된 조행기 링크가 없습니다. 네이버 API 키를 확인하거나 "
+                f"[네이버에서 '{month}월 {region} 선상 조행기' 검색](https://search.naver.com/search.naver?query={month}월+{region}+선상+조행기)을 이용해 보세요."
             )
         else:
             stage_used = links[0].get("cascade_stage", 1)
