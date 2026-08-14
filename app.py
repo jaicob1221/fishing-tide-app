@@ -7,14 +7,59 @@ import os
 from pathlib import Path
 import requests
 import re
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== 페이지 설정 ====================
 st.set_page_config(
-    page_title="물때 선상낚시 도우미",
+    page_title="물때·선상24 낚시 도우미",
     page_icon="🌊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+# ==================== 비밀번호 (지인 전용) ====================
+def check_password() -> bool:
+    """secrets.toml 의 password 로 접근 제한"""
+    def _on_enter():
+        expected = ""
+        try:
+            expected = str(st.secrets.get("password", "") or st.secrets.get("APP_PASSWORD", "") or "")
+        except Exception:
+            expected = ""
+        if expected and st.session_state.get("password_input", "") == expected:
+            st.session_state["password_correct"] = True
+            st.session_state.pop("password_input", None)
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.markdown("### 🔒 지인 전용 서비스")
+    st.caption("비밀번호를 입력하세요. (관리자에게 문의)")
+    st.text_input(
+        "비밀번호",
+        type="password",
+        key="password_input",
+        on_change=_on_enter,
+    )
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("비밀번호가 틀렸습니다.")
+    # secrets 미설정 안내
+    try:
+        has_pw = bool(st.secrets.get("password") or st.secrets.get("APP_PASSWORD"))
+    except Exception:
+        has_pw = False
+    if not has_pw:
+        st.warning("secrets.toml 에 `password = \"원하는비번\"` 을 넣어 주세요.")
+    return False
+
+
+if not check_password():
+    st.stop()
 
 # 모바일·제목 잘림 대응 CSS
 st.markdown("""
@@ -86,8 +131,8 @@ section[data-testid="stSidebar"] { min-width: 220px; }
 st.markdown(
     """
 <div class="app-header">
-  <p class="title">🌊 물때 선상낚시 도우미</p>
-  <p class="subtitle">지역·월별 물때 달력 · 실측 날씨 · 추천 어종 · 조행기 링크</p>
+  <p class="title">🌊 물때 · 선상24 낚시 도우미</p>
+  <p class="subtitle">물때·기상 정보 · 선상24 예약 가능 선박 검색</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -609,41 +654,55 @@ def render_windy_map(lat: float, lon: float, region: str, date_str: str = None, 
         st.markdown(f"[🗺️ Windy 전체 화면](https://www.windy.com/{lat}/{lon})")
 
 
-# ==================== 사이드바 ====================
+# ==================== 사이드바 (2메뉴) ====================
+MENU_TIDE = "📅 날짜별 물때 및 기상 정보"
+MENU_SUNSANG = "🚤 선상 24 예약 일괄 검색"
+
 with st.sidebar:
-    st.header("⚙️ 설정")
+    st.header("메뉴")
+    app_menu = st.radio(
+        "기능 선택",
+        [MENU_TIDE, MENU_SUNSANG],
+        label_visibility="collapsed",
+    )
+    st.divider()
 
+    # 기본값 (메뉴 전환 시에도 변수 존재하도록)
     today = date.today()
-    year = st.number_input("연도", min_value=2024, max_value=2030, value=today.year)
-    month = st.number_input("월", min_value=1, max_value=12, value=today.month)
+    year = today.year
+    month = today.month
+    sea_area = "서해"
+    region = "인천"
+    client = None
 
-    st.divider()
+    if app_menu == MENU_TIDE:
+        st.subheader("물때 · 기상 설정")
+        year = st.number_input("연도", min_value=2024, max_value=2030, value=today.year)
+        month = st.number_input("월", min_value=1, max_value=12, value=today.month)
+        st.divider()
+        sea_area = st.selectbox("해역 선택", ["서해", "동해", "남해"])
+        region_options = {
+            "서해": ["인천", "평택", "보령", "군산", "목포"],
+            "동해": ["속초", "강릉", "울진", "포항", "울산"],
+            "남해": ["통영", "거제", "여수", "완도", "제주"],
+        }
+        region = st.selectbox("세부 지역", region_options[sea_area])
+        st.divider()
+        st.caption("AI 조언 기능 제외됨 · 조행기 링크 사용")
+        nid, nsec = get_naver_credentials()
+        if nid and nsec:
+            st.success("✅ 네이버 검색 API 키 로드됨")
+        else:
+            st.warning("⚠️ NAVER_CLIENT_ID / SECRET 미설정")
+        if get_windy_api_key():
+            st.success("✅ Windy Map Forecast API 키 로드됨")
+        else:
+            st.caption("Windy: secrets에 WINDY_API_KEY 없으면 공개 embed 사용")
+        st.info("💡 달력 날짜를 누르면 상세 정보가 나와요!")
 
-    sea_area = st.selectbox("해역 선택", ["서해", "동해", "남해"])
-    region_options = {
-        "서해": ["인천", "평택", "보령", "군산", "목포"],
-        "동해": ["속초", "강릉", "울진", "포항", "울산"],
-        "남해": ["통영", "거제", "여수", "완도", "제주"],
-    }
-    region = st.selectbox("세부 지역", region_options[sea_area])
-
-    st.divider()
-
-    client = None  # AI 조언 기능 비활성화 (비용 절감). 조행기 링크 사용
-    st.caption("AI 조언 기능 제외됨 · 조행기 링크 사용")
-
-    nid, nsec = get_naver_credentials()
-    if nid and nsec:
-        st.success("✅ 네이버 검색 API 키 로드됨")
     else:
-        st.warning("⚠️ NAVER_CLIENT_ID / SECRET 미설정")
-
-    if get_windy_api_key():
-        st.success("✅ Windy Map Forecast API 키 로드됨")
-    else:
-        st.caption("Windy: secrets에 WINDY_API_KEY 없으면 공개 embed 사용")
-
-    st.info("💡 달력 날짜를 누르면 상세 정보가 나와요!")
+        st.subheader("선상24 검색 조건")
+        st.caption("예약 가능 선박을 날짜·지역·어종으로 일괄 검색")
 
 
 # ==================== 물때 계산 ====================
@@ -848,8 +907,21 @@ def get_species_method_guide(fishes: list) -> str:
 
 
 
+# 한국 선상·배낚시에서 실제로 자주 언급되는 대상어 전체 목록
+# (긴 이름 우선 매칭을 위해 길이 내림차순 정렬해서 사용)
+ALL_BOAT_FISH = [
+    "갑오징어", "주꾸미", "한치", "문어", "낙지",
+    "광어", "우럭", "농어", "참돔", "감성돔", "돌돔",
+    "볼락", "열기", "방어", "부시리", "노래미",
+    "도다리", "가자미", "대구", "학꽁치", "붕장어",
+    "삼치", "고등어", "전갱이", "갈치", "보리멸",
+    "성대", "아귀", "장어", "전어", "숭어",
+    "임연수어", "도루묵", "양태", "벤자리", "자바리",
+]
+
+
 def get_seasonal_reference(sea: str, month: int) -> str:
-    """시즌별 대표 선상 대상어 (현장 출조 기준, 우선순위 높은 순)"""
+    """시즌별 대표 선상 대상어 (보조 가점용, 후보 제한용이 아님)"""
     data = {
         "서해": {
             1: "우럭, 광어, 노래미", 2: "우럭, 광어, 노래미", 3: "우럭, 광어, 도다리",
@@ -866,55 +938,58 @@ def get_seasonal_reference(sea: str, month: int) -> str:
             10: "볼락, 열기, 방어", 11: "대구, 볼락, 열기", 12: "대구, 볼락, 열기",
         },
         "남해": {
-            1: "볼락, 감성돔, 참돔", 2: "볼락, 감성돔, 참돔", 3: "감성돔, 참돔, 볼락, 도다리",
-            4: "감성돔, 참돔, 한치, 농어", 5: "한치, 참돔, 감성돔, 농어",
-            6: "한치, 부시리, 참돔, 농어", 7: "한치, 부시리, 참돔, 농어",
-            8: "한치, 부시리, 참돔", 9: "참돔, 감성돔, 갑오징어, 농어",
-            10: "감성돔, 참돔, 갑오징어, 볼락", 11: "감성돔, 볼락, 참돔", 12: "볼락, 감성돔, 참돔",
+            1: "문어, 볼락, 감성돔, 참돔", 2: "문어, 볼락, 감성돔, 참돔",
+            3: "문어, 감성돔, 참돔, 볼락", 4: "문어, 한치, 감성돔, 참돔",
+            5: "한치, 문어, 참돔, 농어", 6: "한치, 문어, 부시리, 참돔",
+            7: "한치, 문어, 부시리, 참돔", 8: "한치, 문어, 부시리, 참돔",
+            9: "문어, 참돔, 감성돔, 갑오징어", 10: "문어, 감성돔, 참돔, 볼락",
+            11: "문어, 감성돔, 볼락, 참돔", 12: "문어, 볼락, 감성돔, 참돔",
         },
     }
     return data.get(sea, {}).get(month, "광어, 우럭, 참돔")
 
 
 def recommend_fish_by_naver(region: str, sea: str, month: int, vary: bool = False) -> list:
-    """시즌 우선 + 네이버 검색 빈도 기반 추천 어종 3종
+    """검색 결과에서 어종을 '발견'하는 방식의 추천
 
-    - 시즌 대표어에 강한 기본 점수 부여 (현장 유행 반영)
-    - 넓은 검색어(선상 낚시/배낚시/출조 후기 등)로 언급 빈도 집계
-    - vary=True 이면 상위 후보 중 약간 섞어서 '다시 추천' 시 결과 변화
+    근본 구조:
+    1) 지역·월·선상/배낚시/출조 관련 글을 넓게 검색
+    2) 글 제목·요약에 등장하는 어종을 ALL_BOAT_FISH 전체에서 집계
+       → 목록에 있는 어종은 검색에 나오면 무조건 후보가 됨 (문어 누락 같은 문제 방지)
+    3) 시즌 표는 '가점'만 줌 (후보를 제한하지 않음)
+    4) 점수 상위 3종 반환
     """
     import random
 
     client_id, client_secret = get_naver_credentials()
     seasonal_list = [f.strip() for f in get_seasonal_reference(sea, month).split(",") if f.strip()]
-    seasonal_fallback = seasonal_list[:3]
+    seasonal_fallback = seasonal_list[:3] if seasonal_list else ["광어", "우럭", "참돔"]
+
+    # 긴 이름 먼저 매칭 (갑오징어 > 오징어 등)
+    species = sorted(ALL_BOAT_FISH, key=len, reverse=True)
 
     if not client_id or not client_secret:
         if vary and len(seasonal_list) > 3:
-            return random.sample(seasonal_list, 3)
-        return seasonal_fallback
+            return random.sample(seasonal_list, min(3, len(seasonal_list)))
+        return seasonal_fallback[:3]
 
-    known = [
-        "주꾸미", "갑오징어", "한치", "광어", "우럭", "농어", "참돔", "감성돔",
-        "볼락", "열기", "방어", "부시리", "돌돔", "노래미", "도다리", "가자미",
-        "대구", "학꽁치", "붕장어", "삼치", "고등어",
-    ]
-
-    # 넓은 검색어 (조행기뿐 아니라 낚시/출조/후기)
+    # 지역·월 중심 + 대상어가 잘 드러나는 검색어
     queries = [
-        f"{month}월 {region} 선상 낚시",
+        f"{month}월 {region} 선상",
         f"{month}월 {region} 배낚시",
         f"{month}월 {region} 출조",
-        f"{month}월 선상 낚시 {sea}",
-        f"{region} 선상 낚시",
-        f"{region} 배낚시 후기",
+        f"{month}월 {region} 낚시 후기",
         f"{region} 선상 출조",
-        f"{month}월 선상낚시 조행기",
-        "선상 낚시 후기",
-        "배낚시 조과",
+        f"{region} 배낚시 후기",
+        f"{region} 선상 조과",
+        f"{region} 선상 대상어",
+        f"{month}월 {sea} 선상 낚시",
+        f"{region} 문어 선상",  # 지역 특화 힌트 (검색 풀 확장용)
+        f"{month}월 {region} 한치",
+        f"{month}월 {region} 낚시",
     ]
 
-    counts = {k: 0.0 for k in known}
+    counts = {k: 0.0 for k in ALL_BOAT_FISH}
     seen_titles = set()
 
     for q in queries:
@@ -927,55 +1002,56 @@ def recommend_fish_by_naver(region: str, sea: str, month: int, vary: bool = Fals
                 items = []
             for it in items:
                 title = it.get("title") or ""
-                key = title[:40]
-                if key in seen_titles:
+                tkey = title[:48]
+                if tkey in seen_titles:
                     continue
-                seen_titles.add(key)
+                seen_titles.add(tkey)
                 blob = f"{title} {it.get('description') or ''}"
+
                 weight = 1.0
-                if "선상" in blob or "배낚" in blob:
+                if "선상" in blob or "배낚" in blob or "출조" in blob:
                     weight += 1.5
                 if region and region in blob:
-                    weight += 1.0
+                    weight += 1.5
                 if f"{month}월" in blob:
                     weight += 2.0
-                # 최근 글 가점 (postdate)
                 pd = it.get("postdate") or ""
                 if len(pd) == 8 and pd.isdigit():
                     try:
                         from datetime import datetime as _dt
                         age = (date.today() - _dt.strptime(pd, "%Y%m%d").date()).days
-                        if age <= 30:
+                        if age <= 45:
                             weight += 2.0
-                        elif age <= 90:
+                        elif age <= 120:
                             weight += 1.0
                     except Exception:
                         pass
-                for fish in known:
-                    if fish in blob:
-                        counts[fish] += weight
 
-    # 시즌 대표어에 강한 기본 점수 (현장 유행 반영)
+                # 검색 결과에 실제로 나온 어종만 점수 부여
+                matched = set()
+                for fish in species:
+                    if fish in blob and fish not in matched:
+                        counts[fish] += weight
+                        matched.add(fish)
+
+    # 시즌은 가점만 (후보 제한 X)
     for i, fish in enumerate(seasonal_list):
         if fish in counts:
-            # 1순위 +25, 2순위 +18, 3순위 +12, 이후 +6
-            bonus = 25.0 if i == 0 else (18.0 if i == 1 else (12.0 if i == 2 else 6.0))
+            bonus = 12.0 if i == 0 else (8.0 if i == 1 else (5.0 if i == 2 else 3.0))
             counts[fish] += bonus
 
     ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    # 점수가 있는 상위 후보
     candidates = [name for name, sc in ranked if sc > 0]
 
+    if not candidates:
+        return seasonal_fallback[:3]
+
     if vary and len(candidates) >= 4:
-        # 상위 6개 중 3개 샘플링 (시즌 1순위는 최대한 포함)
-        top_pool = candidates[:6]
-        primary = seasonal_list[0] if seasonal_list else None
-        if primary and primary in top_pool:
-            rest = [c for c in top_pool if c != primary]
-            picked = [primary] + random.sample(rest, min(2, len(rest)))
-        else:
-            picked = random.sample(top_pool, 3)
-        # 원래 점수 순서로 재정렬
+        top_pool = candidates[:7]
+        primary = candidates[0]
+        rest = [c for c in top_pool if c != primary]
+        n_rest = min(2, len(rest))
+        picked = [primary] + (random.sample(rest, n_rest) if n_rest else [])
         score_map = dict(ranked)
         picked = sorted(picked, key=lambda x: score_map.get(x, 0), reverse=True)
         return picked[:3]
@@ -1565,7 +1641,202 @@ def wind_dir_text(deg) -> str:
     return dirs[int((deg + 22.5) // 45) % 8]
 
 
-# ==================== 메인 달력 ====================
+# ==================== 선상24 예약 검색 ====================
+SUNSANG_REGION_DATA = {
+    "전체": ["전체"],
+    "인천": ["전체", "강화군", "남구", "동구", "옹진군", "중구"],
+    "경기": ["전체", "시흥", "안산", "평택", "화성"],
+    "충남": ["전체", "당진", "보령", "서산", "서천", "태안", "홍성"],
+    "전북": ["전체", "군산", "부안"],
+    "전남": ["전체", "강진", "고흥", "목포", "무안", "여수", "영암", "완도", "진도"],
+    "강원": ["전체", "강릉", "고성", "동해", "삼척", "속초", "양양"],
+    "경북": ["전체", "경주", "영덕", "울진", "포항"],
+    "경남": ["전체", "거제", "고성", "남해군", "사천", "창원(마산)", "창원(진해)", "통영"],
+    "부산": ["전체", "사하구", "서구", "수영구", "영도구"],
+    "제주": ["전체", "서귀포시", "제주시"],
+}
+
+SUNSANG_FISH_OPTIONS = [
+    "우럭", "갈치", "문어", "농어", "광어", "주꾸미", "갑오징어", "고등어", "참돔",
+    "한치", "오징어", "낙지", "무늬오징어", "화살촉오징어", "호래기",
+    "열기", "삼치", "참가자미", "도다리", "감성돔", "벵에돔", "볼락", "노래미",
+    "방어", "돌돔", "쥐치", "붕장어", "꽃게",
+]
+
+
+def sunsang_fetch_one_day(target_date: str, max_pages: int = 3) -> list:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.sunsang24.com/",
+        "Accept": "application/json",
+        "Origin": "https://www.sunsang24.com",
+    }
+    all_items = []
+    sdate_param = f"{target_date},{target_date}"
+    categories = ["general", "small", "pedestal", "bus", "experience"]
+
+    for page in range(1, max_pages + 1):
+        url = f"https://api.sunsang24.com/ship/list?page={page}&sdate={sdate_param}&type=search"
+        try:
+            res = requests.get(url, headers=headers, timeout=12, verify=False)
+            if res.status_code != 200:
+                break
+            data = res.json()
+            page_count = 0
+            for cat in categories:
+                items = data.get(cat, {}).get("list", [])
+                all_items.extend(items)
+                page_count += len(items)
+            if page_count == 0:
+                break
+        except Exception:
+            break
+    return all_items
+
+
+def sunsang_fetch_ships(start: date, end: date) -> list:
+    all_items = []
+    current = start
+    progress = st.progress(0)
+    total_days = max((end - start).days + 1, 1)
+    day_count = 0
+    while current <= end:
+        day_str = current.strftime("%Y-%m-%d")
+        items = sunsang_fetch_one_day(day_str, max_pages=4)
+        all_items.extend(items)
+        day_count += 1
+        progress.progress(min(day_count / total_days, 1.0))
+        current += timedelta(days=1)
+    progress.empty()
+    return all_items
+
+
+def render_sunsang24_page():
+    """선상24 예약 가능 선박 일괄 검색 UI"""
+    st.subheader("🚤 선상24 예약 가능 선박 검색")
+    st.caption("날짜·지역·어종 조건으로 예약 가능한 선박을 한 번에 찾아봅니다.")
+
+    with st.sidebar:
+        main_region = st.selectbox("지역 (대분류)", list(SUNSANG_REGION_DATA.keys()), key="ss_main_region")
+        sub_region = st.selectbox("상세 지역", SUNSANG_REGION_DATA[main_region], key="ss_sub_region")
+        selected_fish = st.multiselect(
+            "어종 (여러 개 선택 가능)",
+            options=SUNSANG_FISH_OPTIONS,
+            default=[],
+            placeholder="어종을 선택하세요",
+            key="ss_fish",
+        )
+        ship_name = st.text_input("배 이름 (선택)", placeholder="예: 성복호", key="ss_ship_name")
+        c1, c2 = st.columns(2)
+        with c1:
+            start_date = st.date_input("시작일", value=date.today(), key="ss_start")
+        with c2:
+            end_date = st.date_input("종료일", value=date.today() + timedelta(days=2), key="ss_end")
+        days = (end_date - start_date).days + 1
+        if days > 5:
+            st.warning(f"{days}일 검색 → 시간이 꽤 걸릴 수 있어요 (3~5일 추천)")
+        search_btn = st.button("검색하기", type="primary", use_container_width=True, key="ss_search")
+        st.markdown("---")
+        if st.button("캐시 초기화", use_container_width=True, key="ss_cache_clear"):
+            st.cache_data.clear()
+            st.success("캐시 초기화 완료")
+
+    st.markdown("### 검색 결과")
+    if not search_btn:
+        st.info("왼쪽에서 조건을 선택하고 **검색하기**를 눌러주세요.")
+        return
+
+    if start_date > end_date:
+        st.error("시작일이 종료일보다 늦을 수 없습니다.")
+        return
+
+    with st.spinner(f"{start_date} ~ {end_date} 데이터를 가져오는 중..."):
+        raw_list = sunsang_fetch_ships(start_date, end_date)
+
+    st.caption(f"API에서 가져온 원본 데이터: **{len(raw_list)}**개")
+    if len(raw_list) == 0:
+        st.error("데이터를 가져오지 못했습니다. 잠시 후 다시 시도해보세요.")
+        return
+
+    filtered = []
+    for item in raw_list:
+        ship = item.get("ship", {}) or {}
+        remain = item.get("remain_embarkation_num") or 0
+        try:
+            remain = int(remain)
+        except Exception:
+            remain = 0
+        if remain <= 0:
+            continue
+
+        fish_type = item.get("fish_type") or ""
+        name = ship.get("name") or ""
+        area_main = ship.get("area_main") or ""
+        area_sub = ship.get("area_sub") or ""
+        area = ship.get("area") or ""
+
+        if main_region != "전체" and area_main != main_region:
+            continue
+        if sub_region != "전체" and sub_region not in area_sub and sub_region not in area:
+            continue
+        if selected_fish and not any(f in fish_type for f in selected_fish):
+            continue
+        if ship_name and ship_name not in name:
+            continue
+
+        filtered.append({
+            "name": name,
+            "date": item.get("sdate", ""),
+            "time": (item.get("stime") or "")[:5],
+            "remain": remain,
+            "price": item.get("price") or 0,
+            "port": item.get("port_name") or area,
+            "fish": fish_type,
+            "area_main": area_main,
+            "area_sub": area_sub,
+        })
+
+    if not filtered:
+        st.warning("조건에 맞는 예약 가능 선박이 없습니다.")
+        st.info("지역을 '전체'로 하거나 어종을 빼고 다시 검색해보세요.")
+        return
+
+    filtered.sort(key=lambda x: (x["date"], x["time"]))
+    st.success(f"총 **{len(filtered)}**개의 예약 가능 선박을 찾았습니다.")
+    if selected_fish:
+        st.caption(f"선택한 어종: {', '.join(selected_fish)}")
+
+    current_date = None
+    for r in filtered:
+        if r["date"] != current_date:
+            current_date = r["date"]
+            st.markdown(f"### 📅 {current_date}")
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([3.2, 2, 1.3])
+            with col1:
+                st.markdown(f"**{r['name']}**")
+                st.write(f"🕐 {r['time']}  |  📍 {r['area_main']} {r['area_sub']} · {r['port']}")
+                st.write(f"🐟 {r['fish'] or '-'}")
+            with col2:
+                st.write(f"남은 자리: **{r['remain']}명**")
+                try:
+                    st.write(f"가격: **{int(r['price']):,}원**")
+                except Exception:
+                    st.write(f"가격: **{r['price']}원**")
+            with col3:
+                link = f"https://www.sunsang24.com/ship/search_result?d={r['date']}"
+                st.link_button("예약하러 가기", link, use_container_width=True)
+
+
+# ==================== 메인 라우팅 ====================
+if app_menu == MENU_SUNSANG:
+    render_sunsang24_page()
+    st.stop()
+
+# ==================== 메인 달력 (물때·기상) ====================
 month_days = cal.monthcalendar(year, month)
 weekday_names = ["월", "화", "수", "목", "금", "토", "일"]
 st.subheader(f"📅 {year}년 {month}월 물때 달력")
@@ -1747,8 +2018,11 @@ if st.session_state.get("selected_day"):
             st.rerun()
         icons = {
             "광어": "🐟", "우럭": "🐠", "참돔": "🐡", "농어": "🎣", "주꾸미": "🐙",
-            "갑오징어": "🦑", "한치": "🦑", "볼락": "🐟", "감성돔": "🐡", "방어": "🐟",
-            "부시리": "🐟", "열기": "🐠", "노래미": "🐠", "도다리": "🐟", "대구": "🐟",
+            "갑오징어": "🦑", "한치": "🦑", "문어": "🐙", "낙지": "🐙",
+            "볼락": "🐟", "감성돔": "🐡", "방어": "🐟", "부시리": "🐟",
+            "열기": "🐠", "노래미": "🐠", "도다리": "🐟", "대구": "🐟",
+            "갈치": "🐟", "삼치": "🐟", "고등어": "🐟", "전갱이": "🐟",
+            "돌돔": "🐡", "학꽁치": "🐟", "붕장어": "🐟", "가자미": "🐟",
         }
         for fish in fishes:
             icon = icons.get(fish, "🐟")
